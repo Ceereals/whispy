@@ -4,9 +4,10 @@
 //! hallucination filter, and injects the transcript. Clients drive it over a Unix
 //! socket; the Quickshell pill UI reads `state.json`.
 
-// TODO(step-3+): drop once audio/stt/inject/filter are wired into the run loop.
+// TODO(step-5): drop once inject is wired in (only `inject` remains a stub).
 #![allow(dead_code)]
 
+mod app;
 mod audio;
 mod config;
 mod filter;
@@ -23,12 +24,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use clap::Parser;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
 use whispy_common::{State, StateSnapshot};
 
+use crate::app::App;
 use crate::config::Config;
-use crate::state::{now, StatePublisher};
+use crate::filter::Hallucinations;
+use crate::state::{now, StatePublisher, Status};
+use crate::stt::SttClient;
 use crate::whisper::WhisperServer;
 
 /// How long to wait for whisper-server to load the model and start listening.
@@ -61,7 +65,7 @@ fn main() -> ExitCode {
         }
     };
 
-    match run(&cfg) {
+    match run(cfg) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             error!(error = %e, "fatal");
@@ -70,7 +74,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(cfg: &Config) -> std::io::Result<()> {
+fn run(cfg: Config) -> std::io::Result<()> {
     info!(model = %cfg.stt.model, "starting whispy-daemon");
 
     // Install SIGTERM/SIGINT handlers that flip a flag; the accept loop polls it.
@@ -78,7 +82,7 @@ fn run(cfg: &Config) -> std::io::Result<()> {
     signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&shutdown))?;
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&shutdown))?;
 
-    let publisher = StatePublisher::new(cfg.ipc.state_path());
+    let publisher = Arc::new(StatePublisher::new(cfg.ipc.state_path()));
     let shared = Arc::new(Mutex::new(StateSnapshot {
         state: State::Idle,
         rms: 0.0,
@@ -86,6 +90,7 @@ fn run(cfg: &Config) -> std::io::Result<()> {
         error_message: None,
         timestamp: now(),
     }));
+    let status = Status::new(shared, publisher);
 
     // Bring up whisper-server (model resident) before announcing idle.
     let whisper_log = config::state_dir().join("whisper-server.log");
@@ -102,14 +107,40 @@ fn run(cfg: &Config) -> std::io::Result<()> {
     }
     info!("whisper-server ready");
 
-    publisher.publish_state(State::Idle, 0.0).ok();
+    let stt = SttClient::new(&cfg.stt);
+    let blacklist = load_blacklist(&cfg);
+    let socket_path = cfg.ipc.socket_path();
+
+    status.idle();
+    let app = Arc::new(App::new(cfg, status, stt, blacklist));
 
     // Serve until SIGTERM/SIGINT.
-    let result = server::serve(&cfg.ipc.socket_path(), Arc::clone(&shared), Arc::clone(&shutdown));
+    let result = server::serve(&socket_path, app, Arc::clone(&shutdown));
 
     info!("shutting down");
     whisper.shutdown();
     result
+}
+
+/// Load the hallucination blacklist from the configured path, falling back to the
+/// list baked into the binary if the file is missing or unreadable.
+fn load_blacklist(cfg: &Config) -> Hallucinations {
+    let path = PathBuf::from(&cfg.filter.hallucinations_path);
+    if path.exists() {
+        match Hallucinations::load(&path) {
+            Ok(h) => return h,
+            Err(e) => warn!(error = %e, path = %path.display(), "failed to load hallucinations file; using built-in list"),
+        }
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Embedded {
+        #[serde(default)]
+        phrases: Vec<String>,
+    }
+    const EMBED: &str = include_str!("../../../config/hallucinations.toml");
+    let embedded: Embedded = toml::from_str(EMBED).expect("embedded hallucinations parse");
+    Hallucinations::from_phrases(embedded.phrases)
 }
 
 /// Initialise JSON-lines logging to `$XDG_STATE_HOME/whispy/daemon.log`.

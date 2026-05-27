@@ -33,6 +33,31 @@ pub struct Audio {
     pub max_clip_secs: f64,
     pub min_clip_ms: u64,
     pub rms_interval_ms: u64,
+    /// Linear gain applied to captured samples (saturating). The mic is quiet
+    /// (see docs/stt-benchmark.md); raise this for a more responsive meter.
+    #[serde(default = "default_gain")]
+    pub gain: f32,
+}
+
+fn default_gain() -> f32 {
+    1.0
+}
+
+impl Audio {
+    /// Total samples at which capture auto-stops (`error: too_long`).
+    pub fn max_samples(&self) -> usize {
+        (self.rate as f64 * self.max_clip_secs) as usize
+    }
+
+    /// Below this sample count a clip is discarded silently.
+    pub fn min_samples(&self) -> usize {
+        (self.rate as u64 * self.min_clip_ms / 1000) as usize
+    }
+
+    /// Number of samples per RMS reporting window.
+    pub fn rms_window(&self) -> usize {
+        ((self.rate as u64 * self.rms_interval_ms / 1000) as usize).max(1)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

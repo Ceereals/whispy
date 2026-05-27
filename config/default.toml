@@ -19,6 +19,7 @@ channels = 1
 max_clip_secs = 60.0      # auto-stop with error: too_long beyond this
 min_clip_ms = 400         # shorter clips are dropped silently
 rms_interval_ms = 80      # RMS publish cadence while recording
+gain = 1.0                # linear gain on captured samples (mic is quiet; raise for meter)
 
 [filter]
 no_speech_prob_max = 0.6  # drop as low_confidence above this
