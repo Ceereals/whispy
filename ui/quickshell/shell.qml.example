@@ -1,0 +1,23 @@
+// Example shell.qml — minimal integration.
+// Place at the root of your Quickshell config and run:
+//   quickshell -p ./shell.qml
+//
+// Requires: the Whispy module on QML_IMPORT_PATH. Either copy the qml/
+// folder next to this file and add `qmlImportPath: "."` below, or symlink
+// it under ~/.config/quickshell/Whispy/.
+
+import Quickshell
+import Whispy
+
+ShellRoot {
+    // The pill — automatically spawns on every screen and reads
+    // $XDG_RUNTIME_DIR/dictation/state.json.
+    PillPanel {
+        // Override defaults if needed:
+        // statePath: "/tmp/dictation.json"
+        // showLabel: true
+        // showGlow:  false
+    }
+
+    // Add your bars / other surfaces alongside.
+}

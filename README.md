@@ -20,7 +20,7 @@ Hyprland keybind ──► whispy-client ──(unix socket)──► whispy-dae
   RAM), captures audio (PipeWire), filters hallucinations, injects text, publishes state.
 - **whispy-client** — tiny binary called from Hyprland binds (`start`/`stop`/`cancel`).
 - **whisper-server** — whisper.cpp built with the Vulkan backend (runs on AMD RDNA4, no ROCm).
-- **pill UI** — separate Quickshell layer overlay reading the state file (separate handoff).
+- **pill UI** — Quickshell layer overlay reading the state file (see [`ui/quickshell/`](ui/quickshell/)).
 
 State/IPC paths (everything is namespaced `whispy`):
 - socket: `$XDG_RUNTIME_DIR/whispy/whispy.sock`
@@ -36,6 +36,7 @@ crates/client   the thin client
 config/         default.toml, hallucinations.toml
 systemd/        whispy-daemon.service (user unit)
 scripts/        benchmark.sh, setup-ydotool.sh
+ui/quickshell/  Quickshell pill overlay (reads state.json)
 docs/           spike, benchmark, hyprland setup
 ```
 
@@ -65,5 +66,5 @@ Binaries land in `target/release/{whispy-daemon,whispy-client}` (or install with
 - [ ] Step 4 — inference + hallucination filter
 - [ ] Step 5 — injection
 - [ ] Step 6 — thin client + Hyprland binds
-- [ ] Step 7 — pill UI integration (separate handoff)
+- [ ] Step 7 — pill UI integration (module in `ui/quickshell/`; live QA pending)
 - [ ] Step 8 — QoL (cancel-on-Escape, notifications, chime)

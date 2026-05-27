@@ -1,0 +1,5 @@
+module Whispy
+
+singleton Tokens 1.0 Tokens.qml
+Pill 1.0 Pill.qml
+PillPanel 1.0 PillPanel.qml
