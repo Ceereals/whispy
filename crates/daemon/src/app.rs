@@ -56,8 +56,17 @@ impl App {
 
     fn start(&self) -> Resp {
         let mut slot = self.capture.lock().expect("capture lock");
-        if slot.is_some() {
-            return Resp::err("already recording");
+        if let Some(cap) = slot.as_ref() {
+            if cap.auto_stopped() {
+                // A previous session hit the max-duration cap (too_long) and was
+                // never reclaimed by a stop/cancel. Tear it down (kills the orphan
+                // pw-record, joins the finished reader) and start fresh.
+                if let Some(stale) = slot.take() {
+                    stale.cancel();
+                }
+            } else {
+                return Resp::err("already recording");
+            }
         }
 
         let rms_status = self.status.clone();
