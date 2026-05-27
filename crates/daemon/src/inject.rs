@@ -1,15 +1,16 @@
-//! Text injection: clipboard save/restore + ydotool Ctrl+V.
+//! Text injection into the focused window, in one of two modes (`injection.mode`):
 //!
-//! [`Injector::inject`] pastes a transcript into the focused window without
-//! clobbering the user's clipboard: it saves the current selection
-//! (`wl-paste`), copies the transcript (`wl-copy`), pastes it with
-//! `ydotool key <injection.paste_keys>`, then restores the previous clipboard
-//! after `injection.restore_clipboard_delay_ms`.
+//! - `paste` (default): save the current selection (`wl-paste`), copy the
+//!   transcript (`wl-copy`), paste it with `ydotool key <injection.paste_keys>`,
+//!   then restore the previous clipboard after `injection.restore_clipboard_delay_ms`.
+//!   Only the paste step is a hard error; clipboard save/restore are best-effort
+//!   (logged via `tracing::warn!` and otherwise ignored). Non-text clipboards
+//!   (e.g. `image/png`) are not restored — restoring binary selections faithfully
+//!   through `wl-copy` stdin is fragile, so we warn and move on.
+//! - `type`: type the transcript directly with `wtype` (Wayland virtual
+//!   keyboard). Works in terminals too and touches no clipboard.
 //!
-//! Only the paste step is a hard error; clipboard save/restore are best-effort
-//! (logged via `tracing::warn!` and otherwise ignored). Non-text clipboards
-//! (e.g. `image/png`) are not restored — restoring binary selections faithfully
-//! through `wl-copy` stdin is fragile, so we warn and move on.
+//! [`Injector::inject`] dispatches to the configured mode.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -37,6 +38,8 @@ pub enum InjectError {
     Clipboard(String),
     /// The paste keystroke (`ydotool`) could not be delivered.
     Paste(String),
+    /// Typing the transcript (`wtype`) failed.
+    Type(String),
 }
 
 impl std::fmt::Display for InjectError {
@@ -44,6 +47,7 @@ impl std::fmt::Display for InjectError {
         match self {
             InjectError::Clipboard(msg) => write!(f, "clipboard error: {msg}"),
             InjectError::Paste(msg) => write!(f, "paste error: {msg}"),
+            InjectError::Type(msg) => write!(f, "type error: {msg}"),
         }
     }
 }
@@ -98,12 +102,12 @@ impl Injector {
         // `--` stops wtype's option parsing, so a transcript starting with `-`
         // is typed literally instead of being read as a flag.
         let status = Command::new("wtype").arg("--").arg(text).status().map_err(|e| {
-            InjectError::Paste(format!("failed to spawn wtype ({e}); is wtype installed?"))
+            InjectError::Type(format!("failed to spawn wtype ({e}); is wtype installed?"))
         })?;
         if !status.success() {
-            return Err(InjectError::Paste(format!("wtype exited with {status}")));
+            return Err(InjectError::Type(format!("wtype exited with {status}")));
         }
-        debug!(chars = text.len(), "typed via wtype");
+        debug!(chars = text.chars().count(), "typed via wtype");
         Ok(())
     }
 
