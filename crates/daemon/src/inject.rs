@@ -68,8 +68,15 @@ impl Injector {
             .split_whitespace()
             .map(String::from)
             .collect();
+        let use_type = cfg.mode.eq_ignore_ascii_case("type");
+        if !use_type && !cfg.mode.eq_ignore_ascii_case("paste") {
+            warn!(
+                mode = %cfg.mode,
+                "unknown injection.mode; expected \"paste\" or \"type\", falling back to paste"
+            );
+        }
         Self {
-            use_type: cfg.mode.eq_ignore_ascii_case("type"),
+            use_type,
             paste_keys,
             key_delay_ms: cfg.key_delay_ms,
             restore_delay: Duration::from_millis(cfg.restore_clipboard_delay_ms),
@@ -88,7 +95,9 @@ impl Injector {
     /// Type the transcript directly with `wtype` (Wayland virtual keyboard).
     /// Preserves accents and works in terminals; no clipboard is touched.
     fn type_text(&self, text: &str) -> Result<(), InjectError> {
-        let status = Command::new("wtype").arg(text).status().map_err(|e| {
+        // `--` stops wtype's option parsing, so a transcript starting with `-`
+        // is typed literally instead of being read as a flag.
+        let status = Command::new("wtype").arg("--").arg(text).status().map_err(|e| {
             InjectError::Paste(format!("failed to spawn wtype ({e}); is wtype installed?"))
         })?;
         if !status.success() {
