@@ -20,7 +20,12 @@ Hyprland keybind ──► whispy-client ──(unix socket)──► whispy-dae
   RAM), captures audio (PipeWire), filters hallucinations, injects text, publishes state.
 - **whispy-client** — tiny binary called from Hyprland binds (`start`/`stop`/`cancel`).
 - **whisper-server** — whisper.cpp built with the Vulkan backend (runs on AMD RDNA4, no ROCm).
-- **pill UI** — separate Quickshell layer overlay reading `state.json` (separate handoff).
+- **pill UI** — separate Quickshell layer overlay reading the state file (separate handoff).
+
+State/IPC paths (everything is namespaced `whispy`):
+- socket: `$XDG_RUNTIME_DIR/whispy/whispy.sock`
+- state: `$XDG_RUNTIME_DIR/whispy/state.json` (atomic writes, ≤20 Hz) ← the pill UI reads this
+- logs: `$XDG_STATE_HOME/whispy/{daemon.log,whisper-server.log}` (JSON lines)
 
 ## Layout
 
@@ -54,8 +59,8 @@ Binaries land in `target/release/{whispy-daemon,whispy-client}` (or install with
 
 - [x] Spike: build vs fork → full custom (Rust)
 - [x] Step 0 — scaffold cargo workspace
-- [ ] Step 1 — build whisper.cpp (Vulkan) + models + benchmark
-- [ ] Step 2 — daemon skeleton (socket, whisper supervise, state, systemd)
+- [x] Step 1 — build whisper.cpp (Vulkan) + models + benchmark → large-v3-turbo-q5_0
+- [x] Step 2 — daemon skeleton (socket, whisper supervise, state, systemd)
 - [ ] Step 3 — audio capture
 - [ ] Step 4 — inference + hallucination filter
 - [ ] Step 5 — injection

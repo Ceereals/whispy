@@ -32,8 +32,8 @@ restore_clipboard_delay_ms = 300
 paste_keys = "29:1 47:1 47:0 29:0"
 
 [ipc]
-# Empty = use XDG defaults ($XDG_RUNTIME_DIR/dictation.sock,
-# $XDG_RUNTIME_DIR/dictation/state.json).
+# Empty = use XDG defaults ($XDG_RUNTIME_DIR/whispy/whispy.sock,
+# $XDG_RUNTIME_DIR/whispy/state.json).
 socket_path = ""
 state_path = ""
 state_max_hz = 20         # cap state.json writes while recording

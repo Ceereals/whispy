@@ -71,20 +71,32 @@ impl Config {
     }
 }
 
+impl Stt {
+    /// Resolved path to the whisper-server binary.
+    pub fn server_bin_path(&self) -> PathBuf {
+        expand(&self.server_bin)
+    }
+
+    /// Resolved path to the ggml model file.
+    pub fn model_file(&self) -> PathBuf {
+        expand(&self.model_path)
+    }
+}
+
 impl Ipc {
-    /// Resolved Unix socket path (config value or `$XDG_RUNTIME_DIR/dictation.sock`).
+    /// Resolved Unix socket path (config value or `$XDG_RUNTIME_DIR/whispy/whispy.sock`).
     pub fn socket_path(&self) -> PathBuf {
         if self.socket_path.is_empty() {
-            runtime_dir().join("dictation.sock")
+            runtime_dir().join("whispy").join("whispy.sock")
         } else {
             expand(&self.socket_path)
         }
     }
 
-    /// Resolved state.json path (config value or `$XDG_RUNTIME_DIR/dictation/state.json`).
+    /// Resolved state.json path (config value or `$XDG_RUNTIME_DIR/whispy/state.json`).
     pub fn state_path(&self) -> PathBuf {
         if self.state_path.is_empty() {
-            runtime_dir().join("dictation").join("state.json")
+            runtime_dir().join("whispy").join("state.json")
         } else {
             expand(&self.state_path)
         }
@@ -102,6 +114,15 @@ fn runtime_dir() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"))
+}
+
+/// `$XDG_STATE_HOME/whispy` (default `~/.local/state/whispy`): logs and transcripts.
+pub fn state_dir() -> PathBuf {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    base.join("whispy")
 }
 
 /// Expand a leading `~/` to `$HOME`.
@@ -129,7 +150,7 @@ mod tests {
     #[test]
     fn socket_path_falls_back_to_runtime_dir() {
         let ipc = Ipc { socket_path: String::new(), state_path: String::new(), state_max_hz: 20 };
-        assert!(ipc.socket_path().ends_with("dictation.sock"));
+        assert!(ipc.socket_path().ends_with("whispy.sock"));
         assert!(ipc.state_path().ends_with("state.json"));
     }
 }

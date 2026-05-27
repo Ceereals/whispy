@@ -14,7 +14,7 @@ use whispy_common::{Cmd, Resp};
 #[derive(Parser, Debug)]
 #[command(name = "whispy-client", version, about = "Thin client for the whispy dictation daemon")]
 struct Args {
-    /// Daemon socket path (default: $XDG_RUNTIME_DIR/dictation.sock).
+    /// Daemon socket path (default: $XDG_RUNTIME_DIR/whispy/whispy.sock).
     #[arg(long, value_name = "PATH")]
     socket: Option<PathBuf>,
     #[command(subcommand)]
@@ -79,5 +79,6 @@ fn default_socket() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("dictation.sock")
+        .join("whispy")
+        .join("whispy.sock")
 }
