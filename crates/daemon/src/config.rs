@@ -70,6 +70,10 @@ pub struct Filter {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Injection {
+    /// "paste" = clipboard + ydotool Ctrl+V (preserves accents; GUI apps only).
+    /// "type"  = wtype types the transcript directly (works in terminals too).
+    #[serde(default = "default_mode")]
+    pub mode: String,
     pub restore_clipboard_delay_ms: u64,
     pub paste_keys: String,
     /// Delay between ydotool key events. Without it the Ctrl+V events fire in one
@@ -80,6 +84,10 @@ pub struct Injection {
 
 fn default_key_delay() -> u64 {
     25
+}
+
+fn default_mode() -> String {
+    "paste".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]

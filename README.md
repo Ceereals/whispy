@@ -52,7 +52,7 @@ Binaries land in `target/release/{whispy-daemon,whispy-client}` (or install with
 
 ## Requirements
 
-- Hyprland / Wayland, PipeWire (`pw-record`), `wl-clipboard`, `ydotool`.
+- Hyprland / Wayland, PipeWire (`pw-record`), `wl-clipboard`, `ydotool` (paste mode), `wtype` (type mode).
 - whisper.cpp built with `-DGGML_VULKAN=1` (see Step 1 / `docs/stt-benchmark.md`).
 - A Vulkan-capable GPU (developed on RX 9070 XT / RDNA4).
 

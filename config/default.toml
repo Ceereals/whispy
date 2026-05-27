@@ -28,6 +28,7 @@ fuzzy_ratio = 0.85        # hallucination blacklist fuzzy-match threshold
 hallucinations_path = "config/hallucinations.toml"
 
 [injection]
+mode = "paste"            # "paste" (clipboard+Ctrl+V, GUI apps, keeps accents) | "type" (wtype, works in terminals too)
 restore_clipboard_delay_ms = 300
 # ydotool keycodes: Ctrl down, V down, V up, Ctrl up.
 paste_keys = "29:1 47:1 47:0 29:0"

@@ -20,6 +20,8 @@ use tracing::{debug, warn};
 /// Pastes text into the focused window via the Wayland clipboard, preserving
 /// whatever the user had on the clipboard before.
 pub struct Injector {
+    /// When true, type the transcript with `wtype` instead of clipboard + paste.
+    use_type: bool,
     /// ydotool key tokens (e.g. `["29:1", "47:1", "47:0", "29:0"]`).
     paste_keys: Vec<String>,
     /// Delay (ms) between ydotool key events, so the held modifier registers.
@@ -63,15 +65,41 @@ impl Injector {
     pub fn new(cfg: &crate::config::Injection) -> Self {
         let paste_keys = cfg.paste_keys.split_whitespace().map(String::from).collect();
         Self {
+            use_type: cfg.mode.eq_ignore_ascii_case("type"),
             paste_keys,
             key_delay_ms: cfg.key_delay_ms,
             restore_delay: Duration::from_millis(cfg.restore_clipboard_delay_ms),
         }
     }
 
+    /// Inject `text` into the focused window using the configured mode.
+    pub fn inject(&self, text: &str) -> Result<(), InjectError> {
+        if self.use_type {
+            self.type_text(text)
+        } else {
+            self.paste_text(text)
+        }
+    }
+
+    /// Type the transcript directly with `wtype` (Wayland virtual keyboard).
+    /// Preserves accents and works in terminals; no clipboard is touched.
+    fn type_text(&self, text: &str) -> Result<(), InjectError> {
+        let status = Command::new("wtype")
+            .arg(text)
+            .status()
+            .map_err(|e| {
+                InjectError::Paste(format!("failed to spawn wtype ({e}); is wtype installed?"))
+            })?;
+        if !status.success() {
+            return Err(InjectError::Paste(format!("wtype exited with {status}")));
+        }
+        debug!(chars = text.len(), "typed via wtype");
+        Ok(())
+    }
+
     /// Save the current clipboard, copy `text`, paste it with Ctrl+V via ydotool,
     /// then restore the previous clipboard. Best-effort restore (logs on failure).
-    pub fn inject(&self, text: &str) -> Result<(), InjectError> {
+    fn paste_text(&self, text: &str) -> Result<(), InjectError> {
         if self.paste_keys.is_empty() {
             return Err(InjectError::Paste("no paste_keys configured".to_string()));
         }
@@ -256,8 +284,10 @@ mod tests {
 
     fn injector_with_keys(paste_keys: &str) -> Injector {
         Injector::new(&crate::config::Injection {
+            mode: "paste".to_string(),
             restore_clipboard_delay_ms: 150,
             paste_keys: paste_keys.to_string(),
+            key_delay_ms: 25,
         })
     }
 
