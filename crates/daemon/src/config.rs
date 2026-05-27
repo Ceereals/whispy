@@ -72,6 +72,14 @@ pub struct Filter {
 pub struct Injection {
     pub restore_clipboard_delay_ms: u64,
     pub paste_keys: String,
+    /// Delay between ydotool key events. Without it the Ctrl+V events fire in one
+    /// instant and apps miss the held modifier, so the paste silently no-ops.
+    #[serde(default = "default_key_delay")]
+    pub key_delay_ms: u64,
+}
+
+fn default_key_delay() -> u64 {
+    25
 }
 
 #[derive(Debug, Clone, Deserialize)]

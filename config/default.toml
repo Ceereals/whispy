@@ -31,6 +31,7 @@ hallucinations_path = "config/hallucinations.toml"
 restore_clipboard_delay_ms = 300
 # ydotool keycodes: Ctrl down, V down, V up, Ctrl up.
 paste_keys = "29:1 47:1 47:0 29:0"
+key_delay_ms = 25         # spacing between ydotool key events (so the held Ctrl registers)
 
 [ipc]
 # Empty = use XDG defaults ($XDG_RUNTIME_DIR/whispy/whispy.sock,

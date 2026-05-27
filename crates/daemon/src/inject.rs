@@ -22,6 +22,8 @@ use tracing::{debug, warn};
 pub struct Injector {
     /// ydotool key tokens (e.g. `["29:1", "47:1", "47:0", "29:0"]`).
     paste_keys: Vec<String>,
+    /// Delay (ms) between ydotool key events, so the held modifier registers.
+    key_delay_ms: u64,
     /// How long to leave the transcript on the clipboard before restoring.
     restore_delay: Duration,
 }
@@ -62,6 +64,7 @@ impl Injector {
         let paste_keys = cfg.paste_keys.split_whitespace().map(String::from).collect();
         Self {
             paste_keys,
+            key_delay_ms: cfg.key_delay_ms,
             restore_delay: Duration::from_millis(cfg.restore_clipboard_delay_ms),
         }
     }
@@ -125,6 +128,8 @@ impl Injector {
     fn paste(&self) -> Result<(), InjectError> {
         let status = Command::new("ydotool")
             .arg("key")
+            .arg("--key-delay")
+            .arg(self.key_delay_ms.to_string())
             .args(&self.paste_keys)
             .status()
             .map_err(|e| {
