@@ -1,0 +1,15 @@
+[Unit]
+Description=whispy dictation daemon
+Documentation=https://github.com/Ceereals/whispy
+After=pipewire.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/whispy-daemon
+Restart=on-failure
+RestartSec=2
+# whisper-server is launched and supervised as a child by the daemon.
+
+[Install]
+WantedBy=default.target

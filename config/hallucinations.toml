@@ -1,0 +1,13 @@
+# Known whisper hallucinations to drop. Matched exactly and via fuzzy ratio
+# (> filter.fuzzy_ratio). Extend this list from transcripts.jsonl over time.
+phrases = [
+  "Grazie per aver guardato",
+  "Grazie per aver guardato il video",
+  "Sottotitoli a cura di",
+  "Sottotitoli e revisione a cura di",
+  "Iscriviti al canale",
+  "Buongiorno a tutti",
+  "Ci vediamo nella prossima puntata",
+  "Thanks for watching",
+  "Subscribe to the channel",
+]
