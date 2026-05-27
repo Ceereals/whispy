@@ -13,6 +13,7 @@ mod config;
 mod filter;
 mod inject;
 mod server;
+mod setup;
 mod state;
 mod stt;
 mod whisper;
@@ -23,7 +24,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use tracing::{error, info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
 use whispy_common::{State, StateSnapshot};
@@ -31,7 +32,7 @@ use whispy_common::{State, StateSnapshot};
 use crate::app::App;
 use crate::config::Config;
 use crate::filter::Hallucinations;
-use crate::state::{now, StatePublisher, Status};
+use crate::state::{StatePublisher, Status, now};
 use crate::stt::SttClient;
 use crate::whisper::WhisperServer;
 
@@ -39,11 +40,23 @@ use crate::whisper::WhisperServer;
 const WHISPER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Parser, Debug)]
-#[command(name = "whispy-daemon", version, about = "Push-to-talk dictation daemon for Hyprland")]
+#[command(
+    name = "whispy-daemon",
+    version,
+    about = "Push-to-talk dictation daemon for Hyprland"
+)]
 struct Args {
     /// TOML config file (default: $XDG_CONFIG_HOME/whispy/config.toml, else built-in defaults).
     #[arg(long, value_name = "FILE")]
     config: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Bootstrap whisper.cpp, the model, ydotool, config and the systemd unit.
+    Setup(setup::SetupArgs),
 }
 
 fn main() -> ExitCode {
@@ -56,6 +69,12 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    // `setup` is an interactive bootstrap; it prints to the terminal and must not
+    // initialise the JSON file logger or start the daemon.
+    if let Some(Command::Setup(setup_args)) = args.command {
+        return setup::run(&cfg, setup_args);
+    }
 
     let _guard = match init_logging() {
         Ok(g) => g,
@@ -125,11 +144,13 @@ fn run(cfg: Config) -> std::io::Result<()> {
 /// Load the hallucination blacklist from the configured path, falling back to the
 /// list baked into the binary if the file is missing or unreadable.
 fn load_blacklist(cfg: &Config) -> Hallucinations {
-    let path = PathBuf::from(&cfg.filter.hallucinations_path);
+    let path = cfg.filter.hallucinations_file();
     if path.exists() {
         match Hallucinations::load(&path) {
             Ok(h) => return h,
-            Err(e) => warn!(error = %e, path = %path.display(), "failed to load hallucinations file; using built-in list"),
+            Err(e) => {
+                warn!(error = %e, path = %path.display(), "failed to load hallucinations file; using built-in list")
+            }
         }
     }
 
@@ -138,8 +159,8 @@ fn load_blacklist(cfg: &Config) -> Hallucinations {
         #[serde(default)]
         phrases: Vec<String>,
     }
-    const EMBED: &str = include_str!("../../../config/hallucinations.toml");
-    let embedded: Embedded = toml::from_str(EMBED).expect("embedded hallucinations parse");
+    let embedded: Embedded = toml::from_str(config::default_hallucinations_toml())
+        .expect("embedded hallucinations parse");
     Hallucinations::from_phrases(embedded.phrases)
 }
 

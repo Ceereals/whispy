@@ -2,6 +2,19 @@
 
 End-to-end setup for whispy on Hyprland.
 
+## Quick start
+
+After installing the binaries (AUR, `./install.sh`, or `cargo build`), one command
+does everything below — build whisper.cpp (Vulkan), download the model, grant
+ydotool access, seed the config, and enable the service:
+
+```sh
+whispy-daemon setup --quickshell
+```
+
+Then add the [keybinds](#5-keybinds) it prints. The sections below document each
+step for when you want to do it by hand or debug a failure.
+
 ## 1. Prerequisites
 
 - whisper.cpp built with Vulkan and a model downloaded (see `docs/stt-benchmark.md`).
