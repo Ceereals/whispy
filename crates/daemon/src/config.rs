@@ -7,6 +7,19 @@ use serde::Deserialize;
 /// Built-in defaults, embedded so the daemon runs without an installed config file.
 const DEFAULT_TOML: &str = include_str!("../../../config/default.toml");
 
+/// The hallucination blacklist baked into the binary (runtime fallback + `setup` seed).
+const DEFAULT_HALLUCINATIONS_TOML: &str = include_str!("../../../config/hallucinations.toml");
+
+/// The embedded `default.toml`, exposed so `setup` can seed a user config file.
+pub fn default_config_toml() -> &'static str {
+    DEFAULT_TOML
+}
+
+/// The embedded `hallucinations.toml`, exposed so `setup` can seed a user copy.
+pub fn default_hallucinations_toml() -> &'static str {
+    DEFAULT_HALLUCINATIONS_TOML
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub stt: Stt,
@@ -124,6 +137,13 @@ impl Stt {
     }
 }
 
+impl Filter {
+    /// Resolved path to the hallucination blacklist (expands a leading `~/`).
+    pub fn hallucinations_file(&self) -> PathBuf {
+        expand(&self.hallucinations_path)
+    }
+}
+
 impl Ipc {
     /// Resolved Unix socket path (config value or `$XDG_RUNTIME_DIR/whispy/whispy.sock`).
     pub fn socket_path(&self) -> PathBuf {
@@ -144,11 +164,16 @@ impl Ipc {
     }
 }
 
-fn user_config_path() -> Option<PathBuf> {
+/// `$XDG_CONFIG_HOME/whispy` (default `~/.config/whispy`): user config + blacklist.
+pub fn user_config_dir() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("whispy").join("config.toml"))
+    Some(base.join("whispy"))
+}
+
+pub fn user_config_path() -> Option<PathBuf> {
+    user_config_dir().map(|d| d.join("config.toml"))
 }
 
 fn runtime_dir() -> PathBuf {
@@ -167,11 +192,11 @@ pub fn state_dir() -> PathBuf {
 }
 
 /// Expand a leading `~/` to `$HOME`.
-fn expand(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
+pub(crate) fn expand(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return PathBuf::from(home).join(rest);
     }
     PathBuf::from(path)
 }
@@ -190,7 +215,11 @@ mod tests {
 
     #[test]
     fn socket_path_falls_back_to_runtime_dir() {
-        let ipc = Ipc { socket_path: String::new(), state_path: String::new(), state_max_hz: 20 };
+        let ipc = Ipc {
+            socket_path: String::new(),
+            state_path: String::new(),
+            state_max_hz: 20,
+        };
         assert!(ipc.socket_path().ends_with("whispy.sock"));
         assert!(ipc.state_path().ends_with("state.json"));
     }

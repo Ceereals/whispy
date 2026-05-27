@@ -91,7 +91,11 @@ impl SttClient {
     /// POSTs to whisper-server's `/inference` endpoint.
     pub fn transcribe(&self, samples: &[i16]) -> Result<Transcription, SttError> {
         let wav = encode_wav(samples)?;
-        debug!(samples = samples.len(), wav_bytes = wav.len(), "encoded WAV for inference");
+        debug!(
+            samples = samples.len(),
+            wav_bytes = wav.len(),
+            "encoded WAV for inference"
+        );
 
         let body = build_multipart(&self.language, &wav);
         let url = format!("{}/inference", self.base_url);
@@ -136,8 +140,8 @@ fn encode_wav(samples: &[i16]) -> Result<Vec<u8>, SttError> {
 
     let mut cursor = Cursor::new(Vec::new());
     {
-        let mut writer = hound::WavWriter::new(&mut cursor, spec)
-            .map_err(|e| SttError::Audio(e.to_string()))?;
+        let mut writer =
+            hound::WavWriter::new(&mut cursor, spec).map_err(|e| SttError::Audio(e.to_string()))?;
         for &sample in samples {
             writer
                 .write_sample(sample)
@@ -239,8 +243,14 @@ mod tests {
         let resp = Response {
             text: "x".to_string(),
             segments: vec![
-                Segment { avg_logprob: -0.2, no_speech_prob: 0.1 },
-                Segment { avg_logprob: -0.4, no_speech_prob: 0.9 },
+                Segment {
+                    avg_logprob: -0.2,
+                    no_speech_prob: 0.1,
+                },
+                Segment {
+                    avg_logprob: -0.4,
+                    no_speech_prob: 0.9,
+                },
             ],
             detected_language: None,
         };

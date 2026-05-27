@@ -65,7 +65,11 @@ pub struct Status {
 
 impl Status {
     pub fn new(shared: Arc<Mutex<StateSnapshot>>, publisher: Arc<StatePublisher>) -> Self {
-        Self { shared, publisher, generation: Arc::new(AtomicU64::new(0)) }
+        Self {
+            shared,
+            publisher,
+            generation: Arc::new(AtomicU64::new(0)),
+        }
     }
 
     /// A copy of the current snapshot (for the `status` command).
@@ -75,7 +79,13 @@ impl Status {
 
     /// Set a non-error state with the given RMS. Returns the new generation.
     pub fn set(&self, state: State, rms: f32) -> u64 {
-        self.write(StateSnapshot { state, rms, error_kind: None, error_message: None, timestamp: now() })
+        self.write(StateSnapshot {
+            state,
+            rms,
+            error_kind: None,
+            error_message: None,
+            timestamp: now(),
+        })
     }
 
     pub fn recording(&self, rms: f32) {
@@ -135,7 +145,11 @@ mod tests {
     use super::*;
 
     fn publisher() -> (PathBuf, StatePublisher) {
-        let dir = std::env::temp_dir().join(format!("whispy-state-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let dir = std::env::temp_dir().join(format!(
+            "whispy-state-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
         let path = dir.join("state.json");
         (path.clone(), StatePublisher::new(path))
     }
@@ -143,7 +157,12 @@ mod tests {
     #[test]
     fn publish_is_atomic_and_readable() {
         let (path, pubr) = publisher();
-        pubr.publish(&StateSnapshot { state: State::Recording, rms: 0.42, ..Default::default() }).unwrap();
+        pubr.publish(&StateSnapshot {
+            state: State::Recording,
+            rms: 0.42,
+            ..Default::default()
+        })
+        .unwrap();
 
         let text = std::fs::read_to_string(&path).unwrap();
         let snap: StateSnapshot = serde_json::from_str(&text).unwrap();

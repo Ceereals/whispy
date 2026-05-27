@@ -8,8 +8,8 @@ use std::fs::File;
 use std::net::TcpStream;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use tracing::{info, warn};
@@ -46,16 +46,24 @@ impl WhisperServer {
         let errlog = log.try_clone()?;
         info!(bin = %bin.display(), model = %model.display(), port = cfg.port, "spawning whisper-server");
         let child = Command::new(&bin)
-            .arg("-m").arg(&model)
-            .arg("-l").arg(&cfg.language)
-            .arg("--host").arg(&cfg.host)
-            .arg("--port").arg(cfg.port.to_string())
+            .arg("-m")
+            .arg(&model)
+            .arg("-l")
+            .arg(&cfg.language)
+            .arg("--host")
+            .arg(&cfg.host)
+            .arg("--port")
+            .arg(cfg.port.to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(errlog))
             .spawn()?;
 
-        Ok(Self { child, host: cfg.host.clone(), port: cfg.port })
+        Ok(Self {
+            child,
+            host: cfg.host.clone(),
+            port: cfg.port,
+        })
     }
 
     /// Block until the HTTP port accepts a TCP connection, or `timeout` elapses.

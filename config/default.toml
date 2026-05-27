@@ -25,7 +25,8 @@ gain = 1.0                # linear gain on captured samples (mic is quiet; raise
 no_speech_prob_max = 0.6  # drop as low_confidence above this
 avg_logprob_min = -1.0    # drop as low_confidence below this
 fuzzy_ratio = 0.85        # hallucination blacklist fuzzy-match threshold
-hallucinations_path = "config/hallucinations.toml"
+# `whispy-daemon setup` seeds this; if missing, the built-in list is used.
+hallucinations_path = "~/.config/whispy/hallucinations.toml"
 
 [injection]
 mode = "paste"            # "paste" (clipboard+Ctrl+V, GUI apps, keeps accents) | "type" (wtype, works in terminals too)

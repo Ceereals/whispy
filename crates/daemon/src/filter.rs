@@ -4,6 +4,7 @@
 //! 1. confidence thresholds (`no_speech_prob` / `avg_logprob`),
 //! 2. punctuation/whitespace-only rejection,
 //! 3. exact + fuzzy match (`strsim`) against the hallucination blacklist.
+//!
 //! The drop reason is surfaced via [`DropReason::kind`] for the state.json
 //! `error_kind` field.
 
@@ -160,7 +161,10 @@ mod tests {
     }
 
     fn good_metrics() -> Metrics {
-        Metrics { avg_logprob: -0.3, no_speech_prob: 0.1 }
+        Metrics {
+            avg_logprob: -0.3,
+            no_speech_prob: 0.1,
+        }
     }
 
     fn blacklist() -> Hallucinations {
@@ -179,19 +183,34 @@ mod tests {
 
     #[test]
     fn exact_hallucination_is_dropped() {
-        let d = evaluate("Grazie per aver guardato", good_metrics(), &cfg(), &blacklist());
+        let d = evaluate(
+            "Grazie per aver guardato",
+            good_metrics(),
+            &cfg(),
+            &blacklist(),
+        );
         assert_eq!(d, Decision::Drop(DropReason::Hallucination));
     }
 
     #[test]
     fn near_miss_punctuation_is_dropped() {
-        let d = evaluate("grazie per aver guardato!", good_metrics(), &cfg(), &blacklist());
+        let d = evaluate(
+            "grazie per aver guardato!",
+            good_metrics(),
+            &cfg(),
+            &blacklist(),
+        );
         assert_eq!(d, Decision::Drop(DropReason::Hallucination));
     }
 
     #[test]
     fn near_miss_typo_is_dropped() {
-        let d = evaluate("Grazie per aver guardatoo", good_metrics(), &cfg(), &blacklist());
+        let d = evaluate(
+            "Grazie per aver guardatoo",
+            good_metrics(),
+            &cfg(),
+            &blacklist(),
+        );
         assert_eq!(d, Decision::Drop(DropReason::Hallucination));
     }
 
@@ -210,14 +229,20 @@ mod tests {
 
     #[test]
     fn high_no_speech_prob_is_low_confidence() {
-        let metrics = Metrics { avg_logprob: -0.3, no_speech_prob: 0.9 };
+        let metrics = Metrics {
+            avg_logprob: -0.3,
+            no_speech_prob: 0.9,
+        };
         let d = evaluate("apriamo VSCode", metrics, &cfg(), &blacklist());
         assert_eq!(d, Decision::Drop(DropReason::LowConfidence));
     }
 
     #[test]
     fn low_avg_logprob_is_low_confidence() {
-        let metrics = Metrics { avg_logprob: -1.5, no_speech_prob: 0.1 };
+        let metrics = Metrics {
+            avg_logprob: -1.5,
+            no_speech_prob: 0.1,
+        };
         let d = evaluate("apriamo VSCode", metrics, &cfg(), &blacklist());
         assert_eq!(d, Decision::Drop(DropReason::LowConfidence));
     }
@@ -233,7 +258,10 @@ mod tests {
     #[test]
     fn confidence_check_precedes_emptiness() {
         // Empty text with bad metrics is dropped as LowConfidence (order matters).
-        let metrics = Metrics { avg_logprob: -2.0, no_speech_prob: 0.1 };
+        let metrics = Metrics {
+            avg_logprob: -2.0,
+            no_speech_prob: 0.1,
+        };
         let d = evaluate("", metrics, &cfg(), &blacklist());
         assert_eq!(d, Decision::Drop(DropReason::LowConfidence));
     }

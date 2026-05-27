@@ -63,7 +63,11 @@ enum Saved {
 impl Injector {
     /// Build an injector from the `[injection]` config section.
     pub fn new(cfg: &crate::config::Injection) -> Self {
-        let paste_keys = cfg.paste_keys.split_whitespace().map(String::from).collect();
+        let paste_keys = cfg
+            .paste_keys
+            .split_whitespace()
+            .map(String::from)
+            .collect();
         Self {
             use_type: cfg.mode.eq_ignore_ascii_case("type"),
             paste_keys,
@@ -84,12 +88,9 @@ impl Injector {
     /// Type the transcript directly with `wtype` (Wayland virtual keyboard).
     /// Preserves accents and works in terminals; no clipboard is touched.
     fn type_text(&self, text: &str) -> Result<(), InjectError> {
-        let status = Command::new("wtype")
-            .arg(text)
-            .status()
-            .map_err(|e| {
-                InjectError::Paste(format!("failed to spawn wtype ({e}); is wtype installed?"))
-            })?;
+        let status = Command::new("wtype").arg(text).status().map_err(|e| {
+            InjectError::Paste(format!("failed to spawn wtype ({e}); is wtype installed?"))
+        })?;
         if !status.success() {
             return Err(InjectError::Paste(format!("wtype exited with {status}")));
         }

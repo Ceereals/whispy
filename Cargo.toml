@@ -5,7 +5,15 @@ members = ["crates/common", "crates/daemon", "crates/client"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
 license = "MIT"
+authors = ["Riccardo Romoli <romoliriccardo.rr@gmail.com>"]
+description = "System-wide push-to-talk dictation for Hyprland (Wayland), powered by whisper.cpp (Vulkan)."
+repository = "https://github.com/Ceereals/whispy"
+homepage = "https://github.com/Ceereals/whispy"
+keywords = ["dictation", "speech-to-text", "whisper", "hyprland", "wayland"]
+categories = ["command-line-utilities", "accessibility"]
+readme = "README.md"
 
 [workspace.dependencies]
 whispy-common = { path = "crates/common" }
