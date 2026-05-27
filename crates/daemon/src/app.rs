@@ -13,6 +13,7 @@ use whispy_common::{Cmd, Resp};
 use crate::audio::{Capture, Recorder};
 use crate::config::{self, Config};
 use crate::filter::{self, Decision, Hallucinations, Metrics};
+use crate::inject::Injector;
 use crate::state::{now, Status};
 use crate::stt::{SttClient, Transcription};
 
@@ -23,18 +24,21 @@ pub struct App {
     recorder: Recorder,
     stt: Arc<SttClient>,
     blacklist: Arc<Hallucinations>,
+    injector: Injector,
     capture: Mutex<Option<Capture>>,
 }
 
 impl App {
     pub fn new(cfg: Config, status: Status, stt: SttClient, blacklist: Hallucinations) -> Self {
         let recorder = Recorder::new(cfg.audio.clone());
+        let injector = Injector::new(&cfg.injection);
         Self {
             cfg,
             status,
             recorder,
             stt: Arc::new(stt),
             blacklist: Arc::new(blacklist),
+            injector,
             capture: Mutex::new(None),
         }
     }
@@ -137,9 +141,14 @@ impl App {
 
         match decision {
             Decision::Accept(text) => {
-                // TODO(step-5): inject `text` via wl-copy + ydotool.
                 info!(chars = text.len(), lang = ?transcription.language, "transcript accepted");
-                self.status.success();
+                match self.injector.inject(&text) {
+                    Ok(()) => self.status.success(),
+                    Err(e) => {
+                        warn!(error = %e, "injection failed");
+                        self.status.error("inject_error", &e.to_string());
+                    }
+                }
             }
             Decision::Drop(reason) => {
                 info!(reason = reason.kind(), "transcript dropped");

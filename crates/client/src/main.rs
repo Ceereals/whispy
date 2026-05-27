@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use whispy_common::{Cmd, Resp};
+use whispy_common::{Cmd, Resp, State};
 
 #[derive(Parser, Debug)]
 #[command(name = "whispy-client", version, about = "Thin client for the whispy dictation daemon")]
@@ -41,17 +41,16 @@ fn main() -> ExitCode {
     let args = Args::parse();
     let socket = args.socket.unwrap_or_else(default_socket);
 
-    let cmd = match args.command {
-        Command::Start => Cmd::Start,
-        Command::Stop => Cmd::Stop,
-        Command::Cancel => Cmd::Cancel,
-        Command::Status => Cmd::Status,
-        Command::Ping => Cmd::Ping,
-        // TODO(step-6): resolve toggle to start/stop based on the current state.
-        Command::Toggle => Cmd::Status,
+    let result = match args.command {
+        Command::Start => send(&socket, Cmd::Start),
+        Command::Stop => send(&socket, Cmd::Stop),
+        Command::Cancel => send(&socket, Cmd::Cancel),
+        Command::Status => send(&socket, Cmd::Status),
+        Command::Ping => send(&socket, Cmd::Ping),
+        Command::Toggle => toggle(&socket),
     };
 
-    match send(&socket, cmd) {
+    match result {
         Ok(resp) => {
             println!("{}", serde_json::to_string(&resp).unwrap_or_default());
             if resp.ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }
@@ -61,6 +60,16 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Query the current state, then start if idle (or stop if a capture is active).
+fn toggle(socket: &Path) -> std::io::Result<Resp> {
+    let status = send(socket, Cmd::Status)?;
+    let active = matches!(
+        status.snapshot.as_ref().map(|s| s.state),
+        Some(State::Recording) | Some(State::Transcribing)
+    );
+    send(socket, if active { Cmd::Stop } else { Cmd::Start })
 }
 
 fn send(socket: &Path, cmd: Cmd) -> std::io::Result<Resp> {

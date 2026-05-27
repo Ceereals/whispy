@@ -1,16 +1,72 @@
 # Hyprland Setup
 
-> Filled in during **Step 6** (thin client) and **Step 8** (QoL bindings).
+End-to-end setup for whispy on Hyprland.
 
-## Push-to-talk binds
+## 1. Prerequisites
+
+- whisper.cpp built with Vulkan and a model downloaded (see `docs/stt-benchmark.md`).
+  Defaults expect `~/.local/share/whisper.cpp/build/bin/whisper-server` and
+  `~/.local/share/whisper.cpp/models/ggml-large-v3-turbo-q5_0.bin`.
+- `pw-record` (PipeWire), `wl-clipboard` (`wl-copy`/`wl-paste`), `ydotool`.
+
+## 2. Install the binaries
+
+```sh
+cargo install --path crates/daemon
+cargo install --path crates/client
+# -> ~/.cargo/bin/{whispy-daemon,whispy-client}
+```
+
+## 3. ydotool (text injection)
+
+Injection pastes via `ydotool` (Ctrl+V). Grant uinput access and run the daemon:
+
+```sh
+./scripts/setup-ydotool.sh        # udev rule + input group (log out/in after)
+systemctl --user enable --now ydotool   # or run ydotoold from Hyprland autostart
+```
+
+`ydotool` needs `ydotoold` running and `/dev/uinput` accessible — see the script output.
+
+## 4. Run the daemon
+
+```sh
+mkdir -p ~/.config/systemd/user
+cp systemd/whispy-daemon.service ~/.config/systemd/user/
+systemctl --user enable --now whispy-daemon
+journalctl --user -u whispy-daemon -f     # or ~/.local/state/whispy/daemon.log
+```
+
+The daemon loads whisper-server at startup (model resident), so the first dictation
+after boot is fast.
+
+## 5. Keybinds
+
+Push-to-talk (primary): distinct press/release events.
 
 ```
-# Press to start, release to stop+transcribe.
 bindd = SUPER, Space, Start dictation, exec, whispy-client start
 bindr = SUPER, Space, Stop dictation, exec, whispy-client stop
-# Cancel and discard.
 bind  = SUPER SHIFT, Space, Cancel dictation, exec, whispy-client cancel
 ```
 
-`bindd`/`bindr` give distinct press/release events for true push-to-talk. Measure the
-release latency early; fall back to a toggle bind if it exceeds ~100 ms (see handoff risks).
+Measure the release latency early; if `bindr` lags > ~100 ms, fall back to a toggle:
+
+```
+bind = SUPER, Space, Toggle dictation, exec, whispy-client toggle
+```
+
+Cancel-while-recording with Escape is a Step 8 nicety (submap or conditional bind).
+
+## 6. Pill UI
+
+The Quickshell pill lives in `ui/quickshell/` and watches
+`$XDG_RUNTIME_DIR/whispy/state.json`. See `ui/quickshell/README.md`.
+
+## Troubleshooting
+
+- `whispy-client` errors with connection refused → the daemon isn't running.
+- Nothing pastes → check `ydotoold` is running and uinput perms (step 3).
+- Transcripts look wrong / clip quiet tails → raise `[audio].gain` in config; the
+  daemon also peak-normalizes each clip. See `docs/stt-benchmark.md`.
+- Inspect rejected transcriptions in `~/.local/state/whispy/transcripts.jsonl`.

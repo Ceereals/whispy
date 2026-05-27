@@ -62,9 +62,9 @@ Binaries land in `target/release/{whispy-daemon,whispy-client}` (or install with
 - [x] Step 0 — scaffold cargo workspace
 - [x] Step 1 — build whisper.cpp (Vulkan) + models + benchmark → large-v3-turbo-q5_0
 - [x] Step 2 — daemon skeleton (socket, whisper supervise, state, systemd)
-- [ ] Step 3 — audio capture
-- [ ] Step 4 — inference + hallucination filter
-- [ ] Step 5 — injection
-- [ ] Step 6 — thin client + Hyprland binds
+- [x] Step 3 — audio capture (pw-record, RMS, gain/normalize)
+- [x] Step 4 — inference + hallucination filter (+ transcripts.jsonl)
+- [x] Step 5 — injection (wl-copy + ydotool; needs ydotool setup)
+- [x] Step 6 — thin client (start/stop/cancel/toggle) + Hyprland binds doc
 - [ ] Step 7 — pill UI integration (module in `ui/quickshell/`; live QA pending)
 - [ ] Step 8 — QoL (cancel-on-Escape, notifications, chime)
