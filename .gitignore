@@ -1,4 +1,4 @@
 /target
 /samples
 *.wav
-/.agents
+/.agents/worktrees/
