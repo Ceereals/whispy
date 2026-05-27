@@ -67,6 +67,7 @@ impl App {
         let on_too_long = move || {
             warn!("clip exceeded max duration");
             too_long_status.error("too_long", "clip exceeded the maximum duration");
+            notify("Dictation too long", "Clip exceeded the maximum duration.");
         };
 
         match self.recorder.start(on_rms, on_too_long) {
@@ -122,6 +123,7 @@ impl App {
             Err(e) => {
                 warn!(error = %e, "transcription failed");
                 self.status.error("stt_error", &e.to_string());
+                notify("Dictation failed", &e.to_string());
                 return;
             }
         };
@@ -147,6 +149,7 @@ impl App {
                     Err(e) => {
                         warn!(error = %e, "injection failed");
                         self.status.error("inject_error", &e.to_string());
+                        notify("Dictation paste failed", &e.to_string());
                     }
                 }
             }
@@ -182,4 +185,13 @@ fn log_transcript(t: &Transcription, drop_reason: Option<&str>) {
     if let Err(e) = result {
         warn!(error = %e, "failed to log transcript");
     }
+}
+
+/// Best-effort desktop notification for hard failures (not routine filter drops).
+fn notify(summary: &str, body: &str) {
+    let _ = std::process::Command::new("notify-send")
+        .arg("--app-name=whispy")
+        .arg(summary)
+        .arg(body)
+        .status();
 }
