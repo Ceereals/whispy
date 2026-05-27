@@ -39,11 +39,12 @@ cmd_run() {
     [ -f "$mpath" ] || { echo "skip $model (not downloaded)"; continue; }
     for wav in "${samples[@]}"; do
       echo "=== model=$model sample=$(basename "$wav") ==="
-      local start end
-      start=$(date +%s.%N)
+      local start end ms
+      start=$(date +%s%N)
       "$WHISPER_CLI" -m "$mpath" -f "$wav" -l auto -np -nt
-      end=$(date +%s.%N)
-      printf "latency: %.2fs\n\n" "$(echo "$end - $start" | bc)"
+      end=$(date +%s%N)
+      ms=$(( (end - start) / 1000000 ))
+      printf "latency (load+infer): %d.%03ds\n\n" $((ms / 1000)) $((ms % 1000))
     done
   done
 }
