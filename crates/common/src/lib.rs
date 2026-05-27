@@ -61,15 +61,27 @@ pub struct Resp {
 
 impl Resp {
     pub fn ok() -> Self {
-        Self { ok: true, error: None, snapshot: None }
+        Self {
+            ok: true,
+            error: None,
+            snapshot: None,
+        }
     }
 
     pub fn status(snapshot: StateSnapshot) -> Self {
-        Self { ok: true, error: None, snapshot: Some(snapshot) }
+        Self {
+            ok: true,
+            error: None,
+            snapshot: Some(snapshot),
+        }
     }
 
     pub fn err(message: impl Into<String>) -> Self {
-        Self { ok: false, error: Some(message.into()), snapshot: None }
+        Self {
+            ok: false,
+            error: Some(message.into()),
+            snapshot: None,
+        }
     }
 }
 
@@ -79,8 +91,14 @@ mod tests {
 
     #[test]
     fn cmd_serializes_with_cmd_tag() {
-        assert_eq!(serde_json::to_string(&Cmd::Start).unwrap(), r#"{"cmd":"start"}"#);
-        assert_eq!(serde_json::to_string(&Cmd::Ping).unwrap(), r#"{"cmd":"ping"}"#);
+        assert_eq!(
+            serde_json::to_string(&Cmd::Start).unwrap(),
+            r#"{"cmd":"start"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&Cmd::Ping).unwrap(),
+            r#"{"cmd":"ping"}"#
+        );
     }
 
     #[test]

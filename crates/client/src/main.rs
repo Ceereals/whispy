@@ -12,7 +12,11 @@ use clap::{Parser, Subcommand};
 use whispy_common::{Cmd, Resp, State};
 
 #[derive(Parser, Debug)]
-#[command(name = "whispy-client", version, about = "Thin client for the whispy dictation daemon")]
+#[command(
+    name = "whispy-client",
+    version,
+    about = "Thin client for the whispy dictation daemon"
+)]
 struct Args {
     /// Daemon socket path (default: $XDG_RUNTIME_DIR/whispy/whispy.sock).
     #[arg(long, value_name = "PATH")]
@@ -53,7 +57,11 @@ fn main() -> ExitCode {
     match result {
         Ok(resp) => {
             println!("{}", serde_json::to_string(&resp).unwrap_or_default());
-            if resp.ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+            if resp.ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
         }
         Err(e) => {
             eprintln!("whispy-client: {e}");
@@ -75,13 +83,16 @@ fn toggle(socket: &Path) -> std::io::Result<Resp> {
 fn send(socket: &Path, cmd: Cmd) -> std::io::Result<Resp> {
     let stream = UnixStream::connect(socket)?;
     let mut writer = &stream;
-    writeln!(writer, "{}", serde_json::to_string(&cmd).expect("Cmd serializes"))?;
+    writeln!(
+        writer,
+        "{}",
+        serde_json::to_string(&cmd).expect("Cmd serializes")
+    )?;
     writer.flush()?;
 
     let mut line = String::new();
     BufReader::new(&stream).read_line(&mut line)?;
-    serde_json::from_str(&line)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    serde_json::from_str(&line).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 fn default_socket() -> PathBuf {

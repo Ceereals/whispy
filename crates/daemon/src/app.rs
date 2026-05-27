@@ -14,7 +14,7 @@ use crate::audio::{Capture, Recorder};
 use crate::config::{self, Config};
 use crate::filter::{self, Decision, Hallucinations, Metrics};
 use crate::inject::Injector;
-use crate::state::{now, Status};
+use crate::state::{Status, now};
 use crate::stt::{SttClient, Transcription};
 
 /// Shared application state wired into the socket server.
@@ -141,7 +141,12 @@ impl App {
             avg_logprob: transcription.avg_logprob,
             no_speech_prob: transcription.no_speech_prob,
         };
-        let decision = filter::evaluate(&transcription.text, metrics, &self.cfg.filter, &self.blacklist);
+        let decision = filter::evaluate(
+            &transcription.text,
+            metrics,
+            &self.cfg.filter,
+            &self.blacklist,
+        );
 
         // Log every transcription (accepted or dropped) for calibration.
         let reason = match &decision {
@@ -164,7 +169,8 @@ impl App {
             }
             Decision::Drop(reason) => {
                 info!(reason = reason.kind(), "transcript dropped");
-                self.status.error(reason.kind(), "transcript rejected by filter");
+                self.status
+                    .error(reason.kind(), "transcript rejected by filter");
             }
         }
     }

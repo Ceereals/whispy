@@ -7,8 +7,8 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tracing::{debug, info, warn};
@@ -72,7 +72,11 @@ fn handle_conn(stream: UnixStream, app: &Arc<App>) -> std::io::Result<()> {
             }
             Err(e) => Resp::err(format!("invalid command: {e}")),
         };
-        writeln!(writer, "{}", serde_json::to_string(&resp).expect("Resp serializes"))?;
+        writeln!(
+            writer,
+            "{}",
+            serde_json::to_string(&resp).expect("Resp serializes")
+        )?;
         writer.flush()?;
     }
     Ok(())

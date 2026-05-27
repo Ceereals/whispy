@@ -59,7 +59,11 @@ enum Saved {
 impl Injector {
     /// Build an injector from the `[injection]` config section.
     pub fn new(cfg: &crate::config::Injection) -> Self {
-        let paste_keys = cfg.paste_keys.split_whitespace().map(String::from).collect();
+        let paste_keys = cfg
+            .paste_keys
+            .split_whitespace()
+            .map(String::from)
+            .collect();
         Self {
             paste_keys,
             restore_delay: Duration::from_millis(cfg.restore_clipboard_delay_ms),

@@ -12,8 +12,8 @@
 
 use std::io::{BufReader, ErrorKind, Read};
 use std::process::{Child, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 
 use tracing::{debug, warn};
@@ -47,9 +47,12 @@ impl Recorder {
         M: FnOnce() + Send + 'static,
     {
         let mut child = Command::new("pw-record")
-            .arg("--rate").arg(self.cfg.rate.to_string())
-            .arg("--channels").arg(self.cfg.channels.to_string())
-            .arg("--format").arg("s16")
+            .arg("--rate")
+            .arg(self.cfg.rate.to_string())
+            .arg("--channels")
+            .arg(self.cfg.channels.to_string())
+            .arg("--format")
+            .arg("s16")
             .arg("-")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -63,10 +66,17 @@ impl Recorder {
         let cfg = self.cfg.clone();
         let stop_t = Arc::clone(&stop);
         let auto_t = Arc::clone(&auto_stopped);
-        let reader = std::thread::spawn(move || read_loop(stdout, &cfg, stop_t, auto_t, on_rms, on_too_long));
+        let reader = std::thread::spawn(move || {
+            read_loop(stdout, &cfg, stop_t, auto_t, on_rms, on_too_long)
+        });
 
         debug!(pid = child.id(), "capture started");
-        Ok(Capture { child, reader: Some(reader), stop, auto_stopped })
+        Ok(Capture {
+            child,
+            reader: Some(reader),
+            stop,
+            auto_stopped,
+        })
     }
 }
 
@@ -203,7 +213,11 @@ fn apply_gain(sample: i16, gain: f32) -> i16 {
 /// Peak-normalize toward [`NORM_TARGET`]. Only amplifies (quiet clips); never
 /// attenuates, and leaves near-silent buffers untouched.
 fn normalize_peak(mut buf: Vec<i16>) -> Vec<i16> {
-    let peak = buf.iter().map(|s| s.unsigned_abs() as i32).max().unwrap_or(0);
+    let peak = buf
+        .iter()
+        .map(|s| s.unsigned_abs() as i32)
+        .max()
+        .unwrap_or(0);
     if peak <= SILENCE_FLOOR {
         return buf;
     }
