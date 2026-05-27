@@ -67,4 +67,4 @@ Binaries land in `target/release/{whispy-daemon,whispy-client}` (or install with
 - [x] Step 5 — injection (wl-copy + ydotool; needs ydotool setup)
 - [x] Step 6 — thin client (start/stop/cancel/toggle) + Hyprland binds doc
 - [ ] Step 7 — pill UI integration (module in `ui/quickshell/`; live QA pending)
-- [ ] Step 8 — QoL (cancel-on-Escape, notifications, chime)
+- [x] Step 8 — QoL (cancel-on-Escape bind, notify-send on hard errors)
