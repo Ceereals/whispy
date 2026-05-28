@@ -249,7 +249,11 @@ mod tests {
         assert_eq!(audio.silence_windows(), None, "0 disables auto-stop");
 
         audio.silence_timeout_ms = 2000;
-        assert_eq!(audio.silence_windows(), Some(25), "2000ms / 80ms = 25 windows");
+        assert_eq!(
+            audio.silence_windows(),
+            Some(25),
+            "2000ms / 80ms = 25 windows"
+        );
 
         // Rounds up so a sub-window timeout still arms at least one window.
         audio.silence_timeout_ms = 50;

@@ -101,9 +101,13 @@ impl Injector {
     fn type_text(&self, text: &str) -> Result<(), InjectError> {
         // `--` stops wtype's option parsing, so a transcript starting with `-`
         // is typed literally instead of being read as a flag.
-        let status = Command::new("wtype").arg("--").arg(text).status().map_err(|e| {
-            InjectError::Type(format!("failed to spawn wtype ({e}); is wtype installed?"))
-        })?;
+        let status = Command::new("wtype")
+            .arg("--")
+            .arg(text)
+            .status()
+            .map_err(|e| {
+                InjectError::Type(format!("failed to spawn wtype ({e}); is wtype installed?"))
+            })?;
         if !status.success() {
             return Err(InjectError::Type(format!("wtype exited with {status}")));
         }

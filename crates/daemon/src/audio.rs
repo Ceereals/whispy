@@ -77,7 +77,14 @@ impl Recorder {
         let speech_t = Arc::clone(&speech_heard);
         let reader = std::thread::spawn(move || {
             read_loop(
-                stdout, &cfg, stop_t, auto_t, speech_t, on_rms, on_too_long, on_silence,
+                stdout,
+                &cfg,
+                stop_t,
+                auto_t,
+                speech_t,
+                on_rms,
+                on_too_long,
+                on_silence,
             )
         });
 
