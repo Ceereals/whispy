@@ -110,8 +110,12 @@ State & IPC paths (everything is namespaced `whispy`):
 
 Defaults are baked into the daemon (see [`config/default.toml`](config/default.toml)). Override
 any of them by copying the file to `$XDG_CONFIG_HOME/whispy/config.toml`. Common knobs: the
-model and `whisper-server` paths (`[stt]`), the hallucination filter thresholds (`[filter]`),
-and `injection.mode` to switch between paste and type.
+model and `whisper-server` paths (`[stt]`), the per-request `stt.timeout_secs`, the hallucination
+filter thresholds (`[filter]`), and `injection.mode` to switch between paste and type.
+
+To tune the filter, run **`whispy-daemon stats`** — it summarizes the transcript log
+(`$XDG_STATE_HOME/whispy/transcripts.jsonl`) as accepted vs dropped clips, broken down by drop
+reason, so you can see whether `fuzzy_ratio` / confidence bounds are too aggressive.
 
 ## Requirements
 
@@ -120,6 +124,11 @@ and `injection.mode` to switch between paste and type.
 - A Vulkan-capable GPU (developed on RX 9070 XT / RDNA4) + `vulkan-icd-loader`
 - Build tools for `setup whisper`: `git`, `cmake`, a C/C++ compiler
 - Optional: [Quickshell](https://quickshell.org) (Qt 6.5+) for the pill overlay
+
+> **Platform notes.** `setup whisper` builds whisper.cpp with the **Vulkan** backend; NVIDIA
+> (CUDA) or CPU-only users should build whisper.cpp themselves and point `stt.server_bin` at it.
+> AI-workflow auto-selection by focused-window class uses `hyprctl`, so it is **Hyprland-only**
+> (manual `--workflow NAME` still works everywhere; on other compositors the auto-match is skipped).
 
 <details>
 <summary><b>Project layout</b></summary>

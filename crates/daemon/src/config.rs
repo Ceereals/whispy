@@ -45,6 +45,14 @@ pub struct Stt {
     pub model_path: String,
     pub language: String,
     pub server_bin: String,
+    /// Hard cap on a single `/inference` request. Without it a hung whisper-server
+    /// (e.g. a GPU/Vulkan lockup) would strand the daemon in `transcribing` forever.
+    #[serde(default = "default_stt_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+fn default_stt_timeout_secs() -> u64 {
+    30
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -223,6 +231,58 @@ impl Config {
         };
         toml::from_str(&text).map_err(|e| e.to_string())
     }
+
+    /// Validate the loaded config before the daemon commits to starting. Catches
+    /// the misconfigurations that would otherwise fail opaquely at first dictation
+    /// (missing model, bad injection mode, out-of-range thresholds).
+    pub fn validate(&self) -> Result<(), String> {
+        let bin = self.stt.server_bin_path();
+        if !bin.exists() {
+            return Err(format!(
+                "whisper-server not found at {} — run `whispy-daemon setup whisper`",
+                bin.display()
+            ));
+        }
+        let model = self.stt.model_file();
+        if !model.exists() {
+            return Err(format!(
+                "model file not found at {} — run `whispy-daemon setup model`",
+                model.display()
+            ));
+        }
+
+        match self.injection.mode.as_str() {
+            "paste" => {
+                if self.injection.paste_keys.trim().is_empty() {
+                    return Err("injection.paste_keys must be set when mode = \"paste\"".into());
+                }
+            }
+            "type" => {}
+            other => {
+                return Err(format!(
+                    "injection.mode must be \"paste\" or \"type\", got {other:?}"
+                ));
+            }
+        }
+
+        if self.audio.gain <= 0.0 || !self.audio.gain.is_finite() {
+            return Err(format!("audio.gain must be > 0, got {}", self.audio.gain));
+        }
+        if !(0.0..=1.0).contains(&self.filter.fuzzy_ratio) {
+            return Err(format!(
+                "filter.fuzzy_ratio must be in [0.0, 1.0], got {}",
+                self.filter.fuzzy_ratio
+            ));
+        }
+        if self.audio.silence_rms_threshold < 0.0 {
+            return Err(format!(
+                "audio.silence_rms_threshold must be >= 0, got {}",
+                self.audio.silence_rms_threshold
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 impl Stt {
@@ -344,5 +404,96 @@ mod tests {
         };
         assert!(ipc.socket_path().ends_with("whispy.sock"));
         assert!(ipc.state_path().ends_with("state.json"));
+    }
+
+    #[test]
+    fn expand_resolves_leading_tilde() {
+        // Read (don't mutate) HOME so this is safe under parallel test execution.
+        if let Some(home) = std::env::var_os("HOME") {
+            assert_eq!(expand("~/x/y"), PathBuf::from(home).join("x/y"));
+        }
+        // Absolute and bare paths pass through untouched.
+        assert_eq!(
+            expand("/etc/whispy.toml"),
+            PathBuf::from("/etc/whispy.toml")
+        );
+        assert_eq!(expand("relative/path"), PathBuf::from("relative/path"));
+        // A `~` not followed by `/` is left alone.
+        assert_eq!(expand("~tilde"), PathBuf::from("~tilde"));
+    }
+
+    /// A config that passes `validate()`: defaults with `server_bin`/`model_path`
+    /// pointed at real temp files (existence is one of the checks).
+    fn valid_config() -> (Config, tempfiles::Guard) {
+        let guard = tempfiles::two();
+        let mut cfg = Config::load(None).unwrap();
+        cfg.stt.server_bin = guard.bin.to_string_lossy().into_owned();
+        cfg.stt.model_path = guard.model.to_string_lossy().into_owned();
+        (cfg, guard)
+    }
+
+    #[test]
+    fn validate_accepts_a_good_config() {
+        let (cfg, _g) = valid_config();
+        assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
+    }
+
+    #[test]
+    fn validate_rejects_bad_fields() {
+        let (mut cfg, _g) = valid_config();
+        cfg.injection.mode = "nope".into();
+        assert!(cfg.validate().is_err());
+
+        let (mut cfg, _g) = valid_config();
+        cfg.injection.mode = "paste".into();
+        cfg.injection.paste_keys = "  ".into();
+        assert!(cfg.validate().is_err());
+
+        let (mut cfg, _g) = valid_config();
+        cfg.audio.gain = 0.0;
+        assert!(cfg.validate().is_err());
+
+        let (mut cfg, _g) = valid_config();
+        cfg.filter.fuzzy_ratio = 1.5;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_reports_missing_model() {
+        let (mut cfg, _g) = valid_config();
+        cfg.stt.model_path = "/nonexistent/model.bin".into();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("model file not found"), "{err}");
+    }
+
+    /// Tiny helper to create two throwaway files for the path-existence checks.
+    mod tempfiles {
+        use std::path::PathBuf;
+
+        pub struct Guard {
+            pub bin: PathBuf,
+            pub model: PathBuf,
+            dir: PathBuf,
+        }
+
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                std::fs::remove_dir_all(&self.dir).ok();
+            }
+        }
+
+        pub fn two() -> Guard {
+            let dir = std::env::temp_dir().join(format!(
+                "whispy-cfg-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let bin = dir.join("whisper-server");
+            let model = dir.join("model.bin");
+            std::fs::write(&bin, b"").unwrap();
+            std::fs::write(&model, b"").unwrap();
+            Guard { bin, model, dir }
+        }
     }
 }

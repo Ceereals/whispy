@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tracing::warn;
 use whispy_common::{State, StateSnapshot};
@@ -61,14 +61,29 @@ pub struct Status {
     shared: Arc<Mutex<StateSnapshot>>,
     publisher: Arc<StatePublisher>,
     generation: Arc<AtomicU64>,
+    /// Minimum gap between `state.json` writes for repeated `recording` RMS ticks.
+    /// `Duration::ZERO` (state_max_hz == 0) disables throttling.
+    min_interval: Duration,
+    last_publish: Arc<Mutex<Instant>>,
 }
 
 impl Status {
-    pub fn new(shared: Arc<Mutex<StateSnapshot>>, publisher: Arc<StatePublisher>) -> Self {
+    pub fn new(
+        shared: Arc<Mutex<StateSnapshot>>,
+        publisher: Arc<StatePublisher>,
+        state_max_hz: u32,
+    ) -> Self {
+        let min_interval = if state_max_hz == 0 {
+            Duration::ZERO
+        } else {
+            Duration::from_secs_f64(1.0 / state_max_hz as f64)
+        };
         Self {
             shared,
             publisher,
             generation: Arc::new(AtomicU64::new(0)),
+            min_interval,
+            last_publish: Arc::new(Mutex::new(Instant::now())),
         }
     }
 
@@ -120,11 +135,35 @@ impl Status {
 
     fn write(&self, snapshot: StateSnapshot) -> u64 {
         let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
-        *self.shared.lock().expect("state lock") = snapshot.clone();
-        if let Err(e) = self.publisher.publish(&snapshot) {
+        let prev_state = {
+            let mut guard = self.shared.lock().expect("state lock");
+            let prev = guard.state;
+            *guard = snapshot.clone();
+            prev
+        };
+        if self.should_publish(snapshot.state, prev_state)
+            && let Err(e) = self.publisher.publish(&snapshot)
+        {
             warn!(error = %e, "failed to publish state.json");
         }
         generation
+    }
+
+    /// Throttle only repeated `recording` RMS updates; every state *transition* and
+    /// every non-recording state (idle/success/error/transcribing) always publishes.
+    fn should_publish(&self, new: State, prev: State) -> bool {
+        let throttled = new == State::Recording && prev == State::Recording;
+        if !throttled || self.min_interval.is_zero() {
+            *self.last_publish.lock().expect("last_publish lock") = Instant::now();
+            return true;
+        }
+        let mut last = self.last_publish.lock().expect("last_publish lock");
+        if last.elapsed() >= self.min_interval {
+            *last = Instant::now();
+            true
+        } else {
+            false
+        }
     }
 
     /// Spawn a thread that reverts to idle after [`FLASH`], unless a newer state
@@ -179,6 +218,7 @@ mod tests {
         let status = Status::new(
             Arc::new(Mutex::new(StateSnapshot::default())),
             Arc::new(pubr),
+            20,
         );
         status.recording(0.5);
         let snap = status.snapshot();
@@ -190,6 +230,65 @@ mod tests {
         assert_eq!(snap.state, State::Error);
         assert_eq!(snap.error_kind.as_deref(), Some("too_long"));
 
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    fn status_with(hz: u32) -> (PathBuf, Status) {
+        let (path, pubr) = publisher();
+        let status = Status::new(
+            Arc::new(Mutex::new(StateSnapshot::default())),
+            Arc::new(pubr),
+            hz,
+        );
+        (path, status)
+    }
+
+    #[test]
+    fn revert_to_idle_only_when_generation_unchanged() {
+        let (path, status) = status_with(0);
+
+        // A stale generation (nothing published since) reverts to idle.
+        let g = status.set(State::Success, 0.0);
+        status.revert_to_idle_after(g);
+        std::thread::sleep(FLASH + Duration::from_millis(150));
+        assert_eq!(status.snapshot().state, State::Idle);
+
+        // A newer write during the flash window cancels the revert.
+        let g = status.set(State::Success, 0.0);
+        status.revert_to_idle_after(g);
+        status.recording(0.3); // bumps the generation past `g`
+        std::thread::sleep(FLASH + Duration::from_millis(150));
+        assert_eq!(status.snapshot().state, State::Recording);
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn debounce_drops_rapid_recording_writes_but_keeps_transitions() {
+        // 20 Hz => 50ms min interval between recording RMS publishes.
+        let (path, status) = status_with(20);
+
+        // First recording write is a transition (idle -> recording): always published.
+        assert!(status.should_publish(State::Recording, State::Idle));
+        // Immediate repeat while already recording is throttled.
+        assert!(!status.should_publish(State::Recording, State::Recording));
+        // A non-recording state always publishes, even back-to-back.
+        assert!(status.should_publish(State::Transcribing, State::Recording));
+        assert!(status.should_publish(State::Idle, State::Transcribing));
+        // After the interval elapses, a recording write publishes again.
+        status.recording(0.1); // resets the timer via the transition path
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(status.should_publish(State::Recording, State::Recording));
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn hz_zero_disables_throttling() {
+        let (path, status) = status_with(0);
+        assert!(status.min_interval.is_zero());
+        assert!(status.should_publish(State::Recording, State::Recording));
+        assert!(status.should_publish(State::Recording, State::Recording));
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 }

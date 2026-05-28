@@ -4,9 +4,6 @@
 //! hallucination filter, and injects the transcript. Clients drive it over a Unix
 //! socket; the Quickshell pill UI reads `state.json`.
 
-// TODO(step-5): drop once inject is wired in (only `inject` remains a stub).
-#![allow(dead_code)]
-
 mod app;
 mod audio;
 mod config;
@@ -17,6 +14,7 @@ mod pipeline;
 mod server;
 mod setup;
 mod state;
+mod stats;
 mod stt;
 mod whisper;
 
@@ -59,6 +57,8 @@ struct Args {
 enum Command {
     /// Bootstrap whisper.cpp, the model, ydotool, config and the systemd unit.
     Setup(setup::SetupArgs),
+    /// Summarize the transcript log (accepted vs dropped) to help tune the filter.
+    Stats,
 }
 
 fn main() -> ExitCode {
@@ -72,10 +72,18 @@ fn main() -> ExitCode {
         }
     };
 
-    // `setup` is an interactive bootstrap; it prints to the terminal and must not
+    // Subcommands are terminal utilities: they print to the terminal and must not
     // initialise the JSON file logger or start the daemon.
-    if let Some(Command::Setup(setup_args)) = args.command {
-        return setup::run(&cfg, setup_args);
+    match args.command {
+        Some(Command::Setup(setup_args)) => return setup::run(&cfg, setup_args),
+        Some(Command::Stats) => return stats::run(),
+        None => {}
+    }
+
+    // Refuse to start with a config that would only fail at first dictation.
+    if let Err(e) = cfg.validate() {
+        eprintln!("whispy-daemon: invalid configuration: {e}");
+        return ExitCode::FAILURE;
     }
 
     let _guard = match init_logging() {
@@ -102,6 +110,10 @@ fn run(cfg: Config) -> std::io::Result<()> {
     // user service started before the compositor imports the graphical env has none.
     ensure_wayland_display();
 
+    // Surface missing injection/capture tools up front (warn-only: injection errors
+    // already guide the user, but this points at the fix before the first dictation).
+    warn_missing_tools(&cfg);
+
     // Install SIGTERM/SIGINT handlers that flip a flag; the accept loop polls it.
     let shutdown = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&shutdown))?;
@@ -115,22 +127,52 @@ fn run(cfg: Config) -> std::io::Result<()> {
         error_message: None,
         timestamp: now(),
     }));
-    let status = Status::new(shared, publisher);
+    let status = Status::new(shared, publisher, cfg.ipc.state_max_hz);
 
     // Bring up whisper-server (model resident) before announcing idle.
     let whisper_log = config::state_dir().join("whisper-server.log");
     if let Some(parent) = whisper_log.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut whisper = WhisperServer::spawn(&cfg.stt, &whisper_log)?;
-    if !whisper.wait_ready(WHISPER_READY_TIMEOUT, &shutdown) {
-        whisper.shutdown();
+    let whisper = Arc::new(Mutex::new(WhisperServer::spawn(&cfg.stt, &whisper_log)?));
+    if !whisper
+        .lock()
+        .expect("whisper lock")
+        .wait_ready(WHISPER_READY_TIMEOUT, &shutdown)
+    {
+        whisper.lock().expect("whisper lock").shutdown();
         return Err(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
-            "whisper-server did not become ready",
+            format!(
+                "whisper-server did not become ready (see {} for details)",
+                whisper_log.display()
+            ),
         ));
     }
     info!("whisper-server ready");
+
+    // Monitor: if whisper-server dies after startup, respawn it. Polls often enough
+    // that SIGTERM-driven shutdown stays responsive.
+    let monitor = {
+        let whisper = Arc::clone(&whisper);
+        let shutdown = Arc::clone(&shutdown);
+        std::thread::spawn(move || {
+            while !shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_secs(2));
+                if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                let mut w = whisper.lock().expect("whisper lock");
+                if !w.is_alive() {
+                    match w.restart(WHISPER_READY_TIMEOUT, &shutdown) {
+                        Ok(true) => info!("whisper-server restarted"),
+                        Ok(false) => warn!("whisper-server restart did not become ready"),
+                        Err(e) => error!(error = %e, "failed to restart whisper-server"),
+                    }
+                }
+            }
+        })
+    };
 
     // Custom vocabulary biases whisper-server's decoding via the prompt field.
     let vocab_prompt = if cfg.dictionary.vocabulary.is_empty() {
@@ -149,8 +191,28 @@ fn run(cfg: Config) -> std::io::Result<()> {
     let result = server::serve(&socket_path, app, Arc::clone(&shutdown));
 
     info!("shutting down");
-    whisper.shutdown();
+    monitor.join().ok();
+    whisper.lock().expect("whisper lock").shutdown();
     result
+}
+
+/// Warn (don't fail) if the binaries the configured injection mode needs are not
+/// on `PATH`. The same checks back `whispy-daemon setup doctor`.
+fn warn_missing_tools(cfg: &Config) {
+    let mut needed = vec!["pw-record"];
+    if cfg.injection.mode == "type" {
+        needed.push("wtype");
+    } else {
+        needed.extend(["wl-copy", "wl-paste", "ydotool"]);
+    }
+    for tool in needed {
+        if !setup::have(tool) {
+            warn!(
+                tool,
+                "required tool not found on PATH; dictation may fail (run `whispy-daemon setup doctor`)"
+            );
+        }
+    }
 }
 
 /// Load the hallucination blacklist from the configured path, falling back to the
@@ -199,8 +261,10 @@ fn ensure_wayland_display() {
     let names = entries.filter_map(|e| e.ok()?.file_name().into_string().ok());
     match pick_wayland_socket(names) {
         Some(socket) => {
-            // Sound: the only other live thread is the log appender worker, which
-            // never touches the environment, so this write races with nothing.
+            // Safe: this runs early in startup. The only other live thread is the
+            // log-appender worker, which never reads the environment; the whisper
+            // monitor, state-flash threads, and socket server are all spawned later,
+            // so nothing races this write.
             unsafe { std::env::set_var("WAYLAND_DISPLAY", &socket) };
             info!(wayland_display = %socket, "discovered WAYLAND_DISPLAY from $XDG_RUNTIME_DIR");
         }
