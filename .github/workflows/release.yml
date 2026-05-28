@@ -34,3 +34,20 @@ jobs:
           files: |
             whispy-*.tar.gz
             SHA256SUMS
+
+  aur-publish:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish whispy to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v3
+        with:
+          pkgname: whispy
+          pkgbuild: packaging/aur/PKGBUILD
+          assets: packaging/aur/whispy.install
+          commit_username: Riccardo Romoli
+          commit_email: romoliriccardo.rr@gmail.com
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ github.ref_name }}"
+          updpkgsums: true
