@@ -96,6 +96,10 @@ fn main() -> ExitCode {
 fn run(cfg: Config) -> std::io::Result<()> {
     info!(model = %cfg.stt.model, "starting whispy-daemon");
 
+    // Child tools (`wtype`, `wl-copy`, `wl-paste`) need WAYLAND_DISPLAY; a systemd
+    // user service started before the compositor imports the graphical env has none.
+    ensure_wayland_display();
+
     // Install SIGTERM/SIGINT handlers that flip a flag; the accept loop polls it.
     let shutdown = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&shutdown))?;
@@ -164,6 +168,51 @@ fn load_blacklist(cfg: &Config) -> Hallucinations {
     Hallucinations::from_phrases(embedded.phrases)
 }
 
+/// Ensure `WAYLAND_DISPLAY` is set so child injection tools can reach the
+/// compositor. If it is already set we leave it; otherwise we discover the
+/// Wayland socket under `$XDG_RUNTIME_DIR` and set it for ourselves and our
+/// children. Best-effort: a failure only warns, since `paste`/`type` injection
+/// is what ultimately surfaces the error.
+fn ensure_wayland_display() {
+    if std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty()) {
+        return;
+    }
+    let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") else {
+        warn!("WAYLAND_DISPLAY unset and XDG_RUNTIME_DIR missing; injection may fail");
+        return;
+    };
+    let entries = match std::fs::read_dir(&runtime) {
+        Ok(entries) => entries,
+        Err(e) => {
+            warn!(error = %e, "WAYLAND_DISPLAY unset and $XDG_RUNTIME_DIR unreadable; injection may fail");
+            return;
+        }
+    };
+    let names = entries.filter_map(|e| e.ok()?.file_name().into_string().ok());
+    match pick_wayland_socket(names) {
+        Some(socket) => {
+            // Sound: the only other live thread is the log appender worker, which
+            // never touches the environment, so this write races with nothing.
+            unsafe { std::env::set_var("WAYLAND_DISPLAY", &socket) };
+            info!(wayland_display = %socket, "discovered WAYLAND_DISPLAY from $XDG_RUNTIME_DIR");
+        }
+        None => warn!("WAYLAND_DISPLAY unset and no wayland-N socket found; injection may fail"),
+    }
+}
+
+/// Pick the lowest-numbered `wayland-<N>` socket from directory entry names.
+/// Only a bare `wayland-` followed by digits qualifies, so lock files
+/// (`wayland-1.lock`) and helper sockets (`wayland-1-foo.sock`) are ignored.
+fn pick_wayland_socket(names: impl Iterator<Item = String>) -> Option<String> {
+    names
+        .filter_map(|name| {
+            let n: u32 = name.strip_prefix("wayland-")?.parse().ok()?;
+            Some((n, name))
+        })
+        .min_by_key(|(n, _)| *n)
+        .map(|(_, name)| name)
+}
+
 /// Initialise JSON-lines logging to `$XDG_STATE_HOME/whispy/daemon.log`.
 /// The returned guard flushes the non-blocking writer; keep it alive for the run.
 fn init_logging() -> std::io::Result<WorkerGuard> {
@@ -181,4 +230,33 @@ fn init_logging() -> std::io::Result<WorkerGuard> {
         )
         .init();
     Ok(guard)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pick_wayland_socket;
+
+    fn pick(names: &[&str]) -> Option<String> {
+        pick_wayland_socket(names.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn picks_lowest_numbered_socket_ignoring_locks_and_helpers() {
+        let got = pick(&[
+            "wayland-1",
+            "wayland-1.lock",
+            "wayland-1-awww-daemon.sock",
+            "wayland-0",
+        ]);
+        assert_eq!(got.as_deref(), Some("wayland-0"));
+    }
+
+    #[test]
+    fn returns_none_when_no_plain_socket() {
+        assert_eq!(
+            pick(&["wayland-1.lock", "wayland-0-foo.sock", "pipewire-0"]),
+            None
+        );
+        assert_eq!(pick(&[]), None);
+    }
 }

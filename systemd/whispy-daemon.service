@@ -12,4 +12,4 @@ RestartSec=2
 # whisper-server is launched and supervised as a child by the daemon.
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target

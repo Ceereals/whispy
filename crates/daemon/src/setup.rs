@@ -355,7 +355,7 @@ fn unit_contents(exe: &Path) -> String {
          RestartSec=2\n\
          \n\
          [Install]\n\
-         WantedBy=default.target\n",
+         WantedBy=graphical-session.target\n",
         exe.display()
     )
 }
