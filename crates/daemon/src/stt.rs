@@ -24,7 +24,7 @@ pub struct SttClient {
 /// The result of transcribing one audio clip.
 #[derive(Debug, Clone)]
 pub struct Transcription {
-    /// Trimmed transcript text.
+    /// Transcript text with internal whitespace runs collapsed to single spaces.
     pub text: String,
     /// Mean of per-segment `avg_logprob` (0.0 if no segments).
     pub avg_logprob: f32,
@@ -205,11 +205,21 @@ fn aggregate(resp: Response) -> Transcription {
     }
 
     Transcription {
-        text: resp.text.trim().to_string(),
+        text: normalize_whitespace(&resp.text),
         avg_logprob,
         no_speech_prob,
         language: resp.detected_language,
     }
+}
+
+/// Collapse internal whitespace runs into single spaces and trim the ends.
+///
+/// whisper-server's `verbose_json` `text` field joins per-segment text with
+/// newlines, so a multi-segment clip arrives with embedded `\n`. Dictation
+/// output should be a single flowing line, so we fold every whitespace run
+/// (newlines, tabs, repeated spaces) down to one space.
+fn normalize_whitespace(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]
@@ -236,6 +246,20 @@ mod tests {
         assert_eq!(t.avg_logprob, 0.0);
         assert_eq!(t.no_speech_prob, 0.0);
         assert_eq!(t.language.as_deref(), Some("en"));
+    }
+
+    #[test]
+    fn collapses_internal_newlines_and_whitespace() {
+        let resp = Response {
+            text: "primo segmento\n secondo segmento\nterzo".to_string(),
+            segments: vec![Segment {
+                avg_logprob: -0.2,
+                no_speech_prob: 0.1,
+            }],
+            detected_language: None,
+        };
+        let t = aggregate(resp);
+        assert_eq!(t.text, "primo segmento secondo segmento terzo");
     }
 
     #[test]
