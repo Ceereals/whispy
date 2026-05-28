@@ -66,7 +66,7 @@ Cargo workspace (`resolver = "3"`, `edition = "2024"`, MSRV `rust-version = 1.85
 | `inject.rs` | Text injection: `paste` mode (`wl-copy` + `ydotool` Ctrl+V, clipboard save/restore) or `type` mode (`wtype`). |
 | `state.rs` | `StatePublisher` writes `state.json` atomically (tmp + rename); `Status` keeps in-memory + on-disk snapshot in sync and flashes transient states. |
 | `config.rs` | TOML config; built-in defaults embedded via `include_str!`; `Config::validate` rejects bad config at startup. |
-| `setup.rs` | `whispy-daemon setup` — idempotent one-shot bootstrap (build whisper.cpp, fetch model, ydotool perms, seed config, install systemd unit, opt-in Quickshell). |
+| `setup.rs` | `whispy-daemon setup` — idempotent one-shot bootstrap (build whisper.cpp, fetch model, ydotool perms, seed config, install systemd unit, opt-in Quickshell). `--backend auto\|vulkan\|cpu` selects the whisper.cpp build (auto-detects Vulkan, falls back to CPU). |
 | `stats.rs` | `whispy-daemon stats` — read-only summary of `transcripts.jsonl` (accepted vs dropped by reason) for filter tuning. |
 
 ## IPC protocol

@@ -19,6 +19,10 @@ pub struct SetupArgs {
     /// Run a single step instead of the full bootstrap.
     #[command(subcommand)]
     step: Option<SetupStep>,
+    /// whisper.cpp build backend. `auto` builds Vulkan when its loader is present,
+    /// else falls back to CPU.
+    #[arg(long, value_enum, default_value_t = Backend::Auto, global = true)]
+    backend: Backend,
     /// Also install the Quickshell pill module to ~/.config/quickshell/Whispy.
     #[arg(long)]
     quickshell: bool,
@@ -34,7 +38,7 @@ pub struct SetupArgs {
 enum SetupStep {
     /// Check that the required runtime and build tools are present.
     Doctor,
-    /// Clone and build whisper.cpp with the Vulkan backend.
+    /// Clone and build whisper.cpp (backend chosen by `--backend`).
     Whisper,
     /// Download the ggml model to the configured path.
     Model,
@@ -46,6 +50,44 @@ enum SetupStep {
     Quickshell,
 }
 
+/// The whisper.cpp build backend requested on the command line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum Backend {
+    /// Build Vulkan if its loader is present, otherwise CPU.
+    Auto,
+    /// Force the Vulkan backend (`-DGGML_VULKAN=ON`).
+    Vulkan,
+    /// Force a CPU-only build (whisper.cpp's default).
+    Cpu,
+}
+
+/// A backend after `Auto` has been resolved against the detected environment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResolvedBackend {
+    Vulkan,
+    Cpu,
+}
+
+/// Resolve `Auto` against whether the Vulkan loader was detected; explicit
+/// choices ignore detection.
+fn resolve_backend(backend: Backend, vulkan_present: bool) -> ResolvedBackend {
+    match backend {
+        Backend::Vulkan => ResolvedBackend::Vulkan,
+        Backend::Cpu => ResolvedBackend::Cpu,
+        Backend::Auto if vulkan_present => ResolvedBackend::Vulkan,
+        Backend::Auto => ResolvedBackend::Cpu,
+    }
+}
+
+/// Extra cmake flags for the resolved backend. CPU is whisper.cpp's default, so
+/// it needs none.
+fn cmake_backend_args(backend: ResolvedBackend) -> &'static [&'static str] {
+    match backend {
+        ResolvedBackend::Vulkan => &["-DGGML_VULKAN=ON"],
+        ResolvedBackend::Cpu => &[],
+    }
+}
+
 /// Entry point dispatched from `main` when the `setup` subcommand is given.
 pub fn run(cfg: &Config, args: SetupArgs) -> ExitCode {
     let result = match args.step {
@@ -53,7 +95,7 @@ pub fn run(cfg: &Config, args: SetupArgs) -> ExitCode {
             doctor();
             Ok(())
         }
-        Some(SetupStep::Whisper) => build_whisper(cfg),
+        Some(SetupStep::Whisper) => build_whisper(cfg, args.backend),
         Some(SetupStep::Model) => download_model(cfg),
         Some(SetupStep::Ydotool) => setup_ydotool(),
         Some(SetupStep::Systemd) => install_config(cfg).and_then(|()| install_systemd()),
@@ -72,7 +114,7 @@ pub fn run(cfg: &Config, args: SetupArgs) -> ExitCode {
 /// The full bootstrap, in dependency order.
 fn full(cfg: &Config, args: &SetupArgs) -> Result<(), String> {
     doctor();
-    build_whisper(cfg)?;
+    build_whisper(cfg, args.backend)?;
     download_model(cfg)?;
     if args.no_ydotool {
         println!("\n==> ydotool: skipped (--no-ydotool)");
@@ -115,7 +157,11 @@ fn doctor() {
     ] {
         report(cmd, note, have(cmd));
     }
-    report("libvulkan", "Vulkan loader", has_vulkan());
+    report(
+        "libvulkan",
+        "Vulkan loader (only for --backend vulkan; CPU build needs none)",
+        has_vulkan(),
+    );
 }
 
 fn report(name: &str, note: &str, ok: bool) {
@@ -125,8 +171,16 @@ fn report(name: &str, note: &str, ok: bool) {
 
 // --- whisper.cpp ------------------------------------------------------------
 
-fn build_whisper(cfg: &Config) -> Result<(), String> {
-    println!("\n==> whisper.cpp (Vulkan)");
+fn build_whisper(cfg: &Config, backend: Backend) -> Result<(), String> {
+    let resolved = resolve_backend(backend, has_vulkan());
+    let label = match resolved {
+        ResolvedBackend::Vulkan => "Vulkan",
+        ResolvedBackend::Cpu => "CPU",
+    };
+    println!("\n==> whisper.cpp ({label})");
+    if backend == Backend::Auto && resolved == ResolvedBackend::Cpu {
+        println!("  no Vulkan loader detected; building CPU-only (override with --backend vulkan)");
+    }
     let bin = cfg.stt.server_bin_path();
     if bin.exists() {
         println!("  already built: {}", bin.display());
@@ -159,15 +213,23 @@ fn build_whisper(cfg: &Config) -> Result<(), String> {
         println!("  using existing source at {}", repo.display());
     }
 
-    println!("  configuring (cmake -DGGML_VULKAN=ON)");
-    exec(Command::new("cmake").args([
+    let backend_args = cmake_backend_args(resolved);
+    let flag_desc = if backend_args.is_empty() {
+        "default CPU".to_string()
+    } else {
+        backend_args.join(" ")
+    };
+    println!("  configuring (cmake: {flag_desc})");
+    let mut configure = Command::new("cmake");
+    configure.args([
         "-B",
         &build_dir.to_string_lossy(),
         "-S",
         &repo.to_string_lossy(),
-        "-DGGML_VULKAN=ON",
         "-DCMAKE_BUILD_TYPE=Release",
-    ]))?;
+    ]);
+    configure.args(backend_args);
+    exec(&mut configure)?;
 
     println!("  building whisper-server (this takes a while)");
     exec(Command::new("cmake").args([
@@ -443,4 +505,36 @@ fn print_next_steps() {
          \n\
          Then check it: whispy-client ping"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_picks_vulkan_when_present_else_cpu() {
+        assert_eq!(
+            resolve_backend(Backend::Auto, true),
+            ResolvedBackend::Vulkan
+        );
+        assert_eq!(resolve_backend(Backend::Auto, false), ResolvedBackend::Cpu);
+    }
+
+    #[test]
+    fn explicit_backend_ignores_detection() {
+        assert_eq!(
+            resolve_backend(Backend::Vulkan, false),
+            ResolvedBackend::Vulkan
+        );
+        assert_eq!(resolve_backend(Backend::Cpu, true), ResolvedBackend::Cpu);
+    }
+
+    #[test]
+    fn cmake_args_match_backend() {
+        assert_eq!(
+            cmake_backend_args(ResolvedBackend::Vulkan),
+            &["-DGGML_VULKAN=ON"]
+        );
+        assert!(cmake_backend_args(ResolvedBackend::Cpu).is_empty());
+    }
 }

@@ -62,11 +62,13 @@ install -Dm755 target/release/whispy-{daemon,client} -t ~/.local/bin
 
 ## Setup
 
-Bootstrap the runtime once. This **builds whisper.cpp (Vulkan)**, **downloads the model**,
-grants ydotool uinput access, seeds `~/.config/whispy`, and enables the systemd user service:
+Bootstrap the runtime once. This **builds whisper.cpp** (Vulkan if available, else CPU —
+see [Platform notes](#requirements)), **downloads the model**, grants ydotool uinput access,
+seeds `~/.config/whispy`, and enables the systemd user service:
 
 ```sh
 whispy-daemon setup                 # add --quickshell for the pill overlay
+                                    # --backend cpu|vulkan|auto to pick the build (default: auto)
 ```
 
 Run any step on its own with:
@@ -121,14 +123,18 @@ reason, so you can see whether `fuzzy_ratio` / confidence bounds are too aggress
 
 - Hyprland / Wayland, PipeWire (`pw-record`), `wl-clipboard`, `libnotify`
 - `ydotool` (paste mode) and/or `wtype` (type mode)
-- A Vulkan-capable GPU (developed on RX 9070 XT / RDNA4) + `vulkan-icd-loader`
+- A Vulkan-capable GPU (developed on RX 9070 XT / RDNA4) + `vulkan-icd-loader` — *optional;
+  falls back to CPU* (see Platform notes)
 - Build tools for `setup whisper`: `git`, `cmake`, a C/C++ compiler
 - Optional: [Quickshell](https://quickshell.org) (Qt 6.5+) for the pill overlay
 
-> **Platform notes.** `setup whisper` builds whisper.cpp with the **Vulkan** backend; NVIDIA
-> (CUDA) or CPU-only users should build whisper.cpp themselves and point `stt.server_bin` at it.
-> AI-workflow auto-selection by focused-window class uses `hyprctl`, so it is **Hyprland-only**
-> (manual `--workflow NAME` still works everywhere; on other compositors the auto-match is skipped).
+> **Platform notes.** `setup whisper` auto-detects the build backend: it builds whisper.cpp with
+> the **Vulkan** backend when the Vulkan loader is present, and falls back to a **CPU-only** build
+> otherwise. Force either with `whispy-daemon setup whisper --backend cpu` (or `--backend vulkan`).
+> CPU works everywhere but transcribes slower. NVIDIA (CUDA) isn't wired into `setup` yet — build
+> whisper.cpp yourself and point `stt.server_bin` at it. AI-workflow auto-selection by
+> focused-window class uses `hyprctl`, so it is **Hyprland-only** (manual `--workflow NAME` still
+> works everywhere; on other compositors the auto-match is skipped).
 
 <details>
 <summary><b>Project layout</b></summary>
