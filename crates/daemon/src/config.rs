@@ -50,10 +50,27 @@ pub struct Audio {
     /// (see docs/stt-benchmark.md); raise this for a more responsive meter.
     #[serde(default = "default_gain")]
     pub gain: f32,
+    /// Trailing-silence auto-stop: once speech has been heard, this many
+    /// milliseconds of continuous silence stops capture and transcribes what was
+    /// said. `0` disables it (stop only on the explicit command or `too_long`).
+    #[serde(default = "default_silence_timeout_ms")]
+    pub silence_timeout_ms: u64,
+    /// RMS (normalized to `[0, 1]`) at or below which an RMS window counts as
+    /// silence for the trailing-silence auto-stop. Tune to your mic/gain.
+    #[serde(default = "default_silence_rms_threshold")]
+    pub silence_rms_threshold: f32,
 }
 
 fn default_gain() -> f32 {
     1.0
+}
+
+fn default_silence_timeout_ms() -> u64 {
+    2000
+}
+
+fn default_silence_rms_threshold() -> f32 {
+    0.005
 }
 
 impl Audio {
@@ -70,6 +87,16 @@ impl Audio {
     /// Number of samples per RMS reporting window.
     pub fn rms_window(&self) -> usize {
         ((self.rate as u64 * self.rms_interval_ms / 1000) as usize).max(1)
+    }
+
+    /// Consecutive silent RMS windows that trigger the trailing-silence auto-stop,
+    /// or `None` when the feature is disabled (`silence_timeout_ms == 0`).
+    pub fn silence_windows(&self) -> Option<usize> {
+        if self.silence_timeout_ms == 0 {
+            return None;
+        }
+        let window_ms = self.rms_interval_ms.max(1);
+        Some((self.silence_timeout_ms.div_ceil(window_ms) as usize).max(1))
     }
 }
 
@@ -211,6 +238,22 @@ mod tests {
         assert_eq!(cfg.audio.rate, 16000);
         assert_eq!(cfg.audio.channels, 1);
         assert!(cfg.filter.fuzzy_ratio > 0.0);
+    }
+
+    #[test]
+    fn silence_windows_respects_timeout_and_interval() {
+        let mut audio = Config::load(None).unwrap().audio;
+        audio.rms_interval_ms = 80;
+
+        audio.silence_timeout_ms = 0;
+        assert_eq!(audio.silence_windows(), None, "0 disables auto-stop");
+
+        audio.silence_timeout_ms = 2000;
+        assert_eq!(audio.silence_windows(), Some(25), "2000ms / 80ms = 25 windows");
+
+        // Rounds up so a sub-window timeout still arms at least one window.
+        audio.silence_timeout_ms = 50;
+        assert_eq!(audio.silence_windows(), Some(1));
     }
 
     #[test]

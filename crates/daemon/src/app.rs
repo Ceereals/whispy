@@ -54,7 +54,7 @@ impl App {
         }
     }
 
-    fn start(&self) -> Resp {
+    fn start(self: &Arc<Self>) -> Resp {
         let mut slot = self.capture.lock().expect("capture lock");
         if let Some(cap) = slot.as_ref() {
             if cap.auto_stopped() {
@@ -79,7 +79,16 @@ impl App {
             notify("Dictation too long", "Clip exceeded the maximum duration.");
         };
 
-        match self.recorder.start(on_rms, on_too_long) {
+        // Trailing silence finalizes the clip just like an explicit stop. The
+        // recorder fires this from its reader thread, so hand the finish+transcribe
+        // (which joins that very thread) off to a fresh thread to avoid self-join.
+        let silence_app = Arc::clone(self);
+        let on_silence = move || {
+            info!("auto-stop on trailing silence");
+            std::thread::spawn(move || silence_app.auto_finish());
+        };
+
+        match self.recorder.start(on_rms, on_too_long, on_silence) {
             Ok(cap) => {
                 self.status.recording(0.0);
                 *slot = Some(cap);
@@ -113,6 +122,23 @@ impl App {
                 let app = Arc::clone(self);
                 std::thread::spawn(move || app.transcribe(buf));
                 Resp::ok()
+            }
+        }
+    }
+
+    /// Finalize a capture that auto-stopped on trailing silence: transcribe what
+    /// was said, mirroring the explicit `stop` path. Runs on its own thread.
+    /// A no-op if an explicit stop/cancel already reclaimed the capture.
+    fn auto_finish(self: Arc<Self>) {
+        let cap = match self.capture.lock().expect("capture lock").take() {
+            Some(c) => c,
+            None => return,
+        };
+        match cap.finish(self.cfg.audio.min_samples()) {
+            None => self.status.idle(),
+            Some(buf) => {
+                self.status.transcribing();
+                self.transcribe(buf);
             }
         }
     }

@@ -40,11 +40,18 @@ impl Recorder {
 
     /// Start capturing. `on_rms` is called roughly every `rms_interval_ms` with a
     /// normalized RMS in `[0, 1]`. `on_too_long` fires once if the clip reaches
-    /// `max_clip_secs` (capture stops accumulating).
-    pub fn start<R, M>(&self, on_rms: R, on_too_long: M) -> std::io::Result<Capture>
+    /// `max_clip_secs` (capture stops accumulating). `on_silence` fires once if,
+    /// after speech has been heard, the clip goes silent for `silence_timeout_ms`.
+    pub fn start<R, M, S>(
+        &self,
+        on_rms: R,
+        on_too_long: M,
+        on_silence: S,
+    ) -> std::io::Result<Capture>
     where
         R: Fn(f32) + Send + 'static,
         M: FnOnce() + Send + 'static,
+        S: FnOnce() + Send + 'static,
     {
         let mut child = Command::new("pw-record")
             .arg("--rate")
@@ -67,7 +74,7 @@ impl Recorder {
         let stop_t = Arc::clone(&stop);
         let auto_t = Arc::clone(&auto_stopped);
         let reader = std::thread::spawn(move || {
-            read_loop(stdout, &cfg, stop_t, auto_t, on_rms, on_too_long)
+            read_loop(stdout, &cfg, stop_t, auto_t, on_rms, on_too_long, on_silence)
         });
 
         debug!(pid = child.id(), "capture started");
@@ -125,17 +132,19 @@ impl Capture {
     }
 }
 
-fn read_loop<R, M>(
+fn read_loop<R, M, S>(
     stdout: ChildStdout,
     cfg: &Audio,
     stop: Arc<AtomicBool>,
     auto_stopped: Arc<AtomicBool>,
     on_rms: R,
     on_too_long: M,
+    on_silence: S,
 ) -> Vec<i16>
 where
     R: Fn(f32),
     M: FnOnce(),
+    S: FnOnce(),
 {
     let mut reader = BufReader::new(stdout);
     let mut chunk = [0u8; 8192];
@@ -146,6 +155,14 @@ where
     let max_samples = cfg.max_samples();
     let skip_samples = (cfg.rate as u64 * SKIP_MS / 1000) as usize;
     let gain = cfg.gain;
+
+    // Trailing-silence auto-stop bookkeeping. Armed only after the first window
+    // of speech, so lead-in silence before the user starts talking is ignored.
+    let silence_limit = cfg.silence_windows();
+    let silence_threshold = cfg.silence_rms_threshold;
+    let mut speech_seen = false;
+    let mut silent_windows = 0usize;
+    let mut hit_silence = false;
 
     let mut skipped = 0usize;
     let mut sq_sum = 0.0f64;
@@ -181,10 +198,26 @@ where
             sq_sum += norm * norm;
             window_count += 1;
             if window_count >= window_len {
-                let rms = (sq_sum / window_count as f64).sqrt() as f32;
-                on_rms(rms.clamp(0.0, 1.0));
+                let rms = ((sq_sum / window_count as f64).sqrt() as f32).clamp(0.0, 1.0);
+                on_rms(rms);
                 sq_sum = 0.0;
                 window_count = 0;
+
+                if let Some(limit) = silence_limit {
+                    if rms <= silence_threshold {
+                        // Only count silence once we've actually heard speech.
+                        if speech_seen {
+                            silent_windows += 1;
+                            if silent_windows >= limit {
+                                hit_silence = true;
+                                break 'outer;
+                            }
+                        }
+                    } else {
+                        speech_seen = true;
+                        silent_windows = 0;
+                    }
+                }
             }
 
             if samples.len() >= max_samples {
@@ -198,6 +231,9 @@ where
     if too_long {
         auto_stopped.store(true, Ordering::Relaxed);
         on_too_long();
+    } else if hit_silence {
+        debug!(silent_windows, "trailing-silence auto-stop");
+        on_silence();
     }
     samples
 }
