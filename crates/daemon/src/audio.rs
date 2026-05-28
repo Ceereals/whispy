@@ -69,12 +69,16 @@ impl Recorder {
         let stdout = child.stdout.take().expect("stdout piped");
         let stop = Arc::new(AtomicBool::new(false));
         let auto_stopped = Arc::new(AtomicBool::new(false));
+        let speech_heard = Arc::new(AtomicBool::new(false));
 
         let cfg = self.cfg.clone();
         let stop_t = Arc::clone(&stop);
         let auto_t = Arc::clone(&auto_stopped);
+        let speech_t = Arc::clone(&speech_heard);
         let reader = std::thread::spawn(move || {
-            read_loop(stdout, &cfg, stop_t, auto_t, on_rms, on_too_long, on_silence)
+            read_loop(
+                stdout, &cfg, stop_t, auto_t, speech_t, on_rms, on_too_long, on_silence,
+            )
         });
 
         debug!(pid = child.id(), "capture started");
@@ -83,6 +87,7 @@ impl Recorder {
             reader: Some(reader),
             stop,
             auto_stopped,
+            speech_heard,
         })
     }
 }
@@ -93,6 +98,7 @@ pub struct Capture {
     reader: Option<JoinHandle<Vec<i16>>>,
     stop: Arc<AtomicBool>,
     auto_stopped: Arc<AtomicBool>,
+    speech_heard: Arc<AtomicBool>,
 }
 
 impl Capture {
@@ -102,11 +108,19 @@ impl Capture {
     }
 
     /// Stop capture and return the peak-normalized samples, or `None` if the clip
-    /// is shorter than `min_samples` (dropped silently).
+    /// is too short (`< min_samples`) or contained no detected speech — both
+    /// dropped silently so a silent clip is never sent to whisper (which would
+    /// confidently hallucinate "Thank you." / "All right." on pure silence).
     pub fn finish(mut self, min_samples: usize) -> Option<Vec<i16>> {
         let buf = self.teardown();
-        debug!(samples = buf.len(), min = min_samples, "capture finished");
-        if buf.len() < min_samples {
+        let speech = self.speech_heard.load(Ordering::Relaxed);
+        debug!(
+            samples = buf.len(),
+            min = min_samples,
+            speech,
+            "capture finished"
+        );
+        if buf.len() < min_samples || !speech {
             return None;
         }
         Some(normalize_peak(buf))
@@ -137,6 +151,7 @@ fn read_loop<R, M, S>(
     cfg: &Audio,
     stop: Arc<AtomicBool>,
     auto_stopped: Arc<AtomicBool>,
+    speech_heard: Arc<AtomicBool>,
     on_rms: R,
     on_too_long: M,
     on_silence: S,
@@ -156,8 +171,10 @@ where
     let skip_samples = (cfg.rate as u64 * SKIP_MS / 1000) as usize;
     let gain = cfg.gain;
 
-    // Trailing-silence auto-stop bookkeeping. Armed only after the first window
-    // of speech, so lead-in silence before the user starts talking is ignored.
+    // Speech-energy bookkeeping. A window above `silence_threshold` counts as
+    // speech; `speech_seen` gates both the no-speech drop (a clip that never
+    // crossed the threshold is silence) and arming the trailing-silence auto-stop
+    // (so lead-in silence before the user starts talking is ignored).
     let silence_limit = cfg.silence_windows();
     let silence_threshold = cfg.silence_rms_threshold;
     let mut speech_seen = false;
@@ -203,19 +220,17 @@ where
                 sq_sum = 0.0;
                 window_count = 0;
 
-                if let Some(limit) = silence_limit {
-                    if rms <= silence_threshold {
-                        // Only count silence once we've actually heard speech.
-                        if speech_seen {
-                            silent_windows += 1;
-                            if silent_windows >= limit {
-                                hit_silence = true;
-                                break 'outer;
-                            }
-                        }
-                    } else {
-                        speech_seen = true;
-                        silent_windows = 0;
+                if rms > silence_threshold {
+                    speech_seen = true;
+                    silent_windows = 0;
+                } else if speech_seen {
+                    // Trailing silence after speech: arm the auto-stop if enabled.
+                    silent_windows += 1;
+                    if let Some(limit) = silence_limit
+                        && silent_windows >= limit
+                    {
+                        hit_silence = true;
+                        break 'outer;
                     }
                 }
             }
@@ -227,6 +242,8 @@ where
         }
         leftover.drain(..full);
     }
+
+    speech_heard.store(speech_seen, Ordering::Relaxed);
 
     if too_long {
         auto_stopped.store(true, Ordering::Relaxed);

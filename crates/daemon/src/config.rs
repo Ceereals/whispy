@@ -70,7 +70,7 @@ fn default_silence_timeout_ms() -> u64 {
 }
 
 fn default_silence_rms_threshold() -> f32 {
-    0.005
+    0.0015
 }
 
 impl Audio {
