@@ -12,6 +12,7 @@ model_path = "~/.local/share/whisper.cpp/models/ggml-large-v3-turbo-q5_0.bin"
 # "auto" lets whisper detect IT/EN per clip (code-switching).
 language = "auto"
 server_bin = "~/.local/share/whisper.cpp/build/bin/whisper-server"
+timeout_secs = 30        # hard cap on one /inference request (guards against a hung GPU)
 
 [audio]
 rate = 16000

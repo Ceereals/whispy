@@ -305,7 +305,11 @@ mod tests {
     fn normalize_amplifies_quiet_only() {
         // Quiet clip gets amplified so its peak approaches the target.
         let out = normalize_peak(vec![0, 1000, -1000, 500]);
-        let peak = out.iter().map(|s| s.unsigned_abs() as i32).max().unwrap();
+        let peak = out
+            .iter()
+            .map(|s| s.unsigned_abs() as i32)
+            .max()
+            .unwrap_or(0);
         assert!(peak > 30_000, "quiet clip should be amplified, peak={peak}");
 
         // A clip already at/above the target peak is left as-is (never attenuated).

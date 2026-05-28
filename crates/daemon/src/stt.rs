@@ -8,6 +8,7 @@
 
 use std::fmt;
 use std::io::Cursor;
+use std::time::Duration;
 
 use tracing::{debug, warn};
 
@@ -86,7 +87,9 @@ impl SttClient {
             base_url: format!("http://{}:{}", cfg.host, cfg.port),
             language: cfg.language.clone(),
             prompt,
-            agent: ureq::Agent::new(),
+            agent: ureq::AgentBuilder::new()
+                .timeout(Duration::from_secs(cfg.timeout_secs))
+                .build(),
         }
     }
 

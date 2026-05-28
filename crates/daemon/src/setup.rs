@@ -410,7 +410,7 @@ fn exec(cmd: &mut Command) -> Result<(), String> {
 }
 
 /// Is `cmd` on PATH?
-fn have(cmd: &str) -> bool {
+pub(crate) fn have(cmd: &str) -> bool {
     Command::new("sh")
         .arg("-c")
         .arg(format!("command -v {cmd}"))

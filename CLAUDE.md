@@ -58,15 +58,16 @@ Cargo workspace (`resolver = "3"`, `edition = "2024"`, MSRV `rust-version = 1.85
 | `app.rs` | `App` — maps socket commands to the capture→transcribe→filter→inject flow; owns the active capture and per-recording `StartCtx`. |
 | `server.rs` | Unix-socket server: line-based JSON (`Cmd` in, `Resp` out), polls a shutdown flag for clean SIGTERM exit. |
 | `audio.rs` | PipeWire capture via `pw-record` (raw s16le mono), RMS metering, gain, clip limits, trailing-silence auto-stop, peak normalization. |
-| `whisper.rs` | Spawns and supervises the `whisper-server` child; waits for its port; kills it on shutdown. |
+| `whisper.rs` | Spawns and supervises the `whisper-server` child; waits for its port; a monitor thread in `main` polls `is_alive` and `restart`s it if it dies; kills it on shutdown. |
 | `stt.rs` | HTTP client to whisper-server's `/inference` (multipart WAV, `verbose_json`); parses transcript + confidence signals. |
 | `filter.rs` | Hallucination filter: confidence thresholds → punctuation-only rejection → exact + fuzzy (`strsim`) blacklist match. |
 | `pipeline.rs` | Post-transcription text pipeline: corrections → snippets → AI workflow selection + LLM transform. Never fails (falls back to raw text). |
 | `llm.rs` | Minimal OpenAI-compatible chat client (local ollama by default) for AI workflows. |
 | `inject.rs` | Text injection: `paste` mode (`wl-copy` + `ydotool` Ctrl+V, clipboard save/restore) or `type` mode (`wtype`). |
 | `state.rs` | `StatePublisher` writes `state.json` atomically (tmp + rename); `Status` keeps in-memory + on-disk snapshot in sync and flashes transient states. |
-| `config.rs` | TOML config; built-in defaults embedded via `include_str!`. |
+| `config.rs` | TOML config; built-in defaults embedded via `include_str!`; `Config::validate` rejects bad config at startup. |
 | `setup.rs` | `whispy-daemon setup` — idempotent one-shot bootstrap (build whisper.cpp, fetch model, ydotool perms, seed config, install systemd unit, opt-in Quickshell). |
+| `stats.rs` | `whispy-daemon stats` — read-only summary of `transcripts.jsonl` (accepted vs dropped by reason) for filter tuning. |
 
 ## IPC protocol
 
@@ -152,8 +153,9 @@ binaries (not whisper-server/model), publish a GitHub release, and push to the A
   `main.rs` discovers the lowest-numbered `wayland-N` socket so injection tools work.
 - `state.json` is written atomically (tmp + rename) — never write it in place; the UI
   polls it and must never see a half-written file.
-- whisper-server is launched/supervised by the daemon; restart-on-crash is delegated to
-  systemd restarting the whole daemon. Don't shell out to start it elsewhere.
+- whisper-server is launched/supervised by the daemon and respawned in-process by a monitor
+  thread (`main.rs`) if it dies. Don't shell out to start it elsewhere. STT requests are
+  bounded by `stt.timeout_secs` so a hung server surfaces an error instead of stalling.
 - The mic records quiet (~20–25 dB low); audio is peak-normalized before transcription
   and the first ~50 ms are dropped to skip the codec stream-start transient. Keep this in
   mind when touching `audio.rs`.
