@@ -43,3 +43,34 @@ key_delay_ms = 25         # spacing between ydotool key events (so the held Ctrl
 socket_path = ""
 state_path = ""
 state_max_hz = 20         # cap state.json writes while recording
+
+[dictionary]
+# Bias whisper toward custom words/names (joined into the STT prompt).
+vocabulary = []
+# Auto-fix recurring mistakes (case-insensitive, whole-word), e.g.:
+# corrections = { "wisper" = "whisper", "hyperland" = "Hyprland" }
+corrections = {}
+
+[snippets]
+# Text-expansion shortcuts. Placeholders: {{DATE}}, {{TIME}}, {{CLIPBOARD}}.
+# entries = { "my email" = "me@example.com", "stamp" = "{{DATE}} {{TIME}}" }
+entries = {}
+
+[llm]
+# OpenAI-compatible chat endpoint. Default = local ollama. Set api_key for cloud.
+base_url = "http://127.0.0.1:11434/v1"
+model = ""                # empty disables LLM workflows
+api_key = ""
+timeout_secs = 20
+
+# Optional AI workflows. Each rewrites the transcript before injection.
+# Selected by `whispy-client toggle --workflow NAME`, else by matching the
+# focused window class against `apps`.
+# [[workflow]]
+# name = "clean"
+# prompt = "Clean up this dictation: fix punctuation and remove filler words. Output only the cleaned text."
+# apps = []
+# [[workflow]]
+# name = "email"
+# prompt = "Rewrite this dictation as a polite email body. Output only the text."
+# apps = ["thunderbird"]

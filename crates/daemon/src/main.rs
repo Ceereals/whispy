@@ -12,6 +12,8 @@ mod audio;
 mod config;
 mod filter;
 mod inject;
+mod llm;
+mod pipeline;
 mod server;
 mod setup;
 mod state;
@@ -130,7 +132,13 @@ fn run(cfg: Config) -> std::io::Result<()> {
     }
     info!("whisper-server ready");
 
-    let stt = SttClient::new(&cfg.stt);
+    // Custom vocabulary biases whisper-server's decoding via the prompt field.
+    let vocab_prompt = if cfg.dictionary.vocabulary.is_empty() {
+        None
+    } else {
+        Some(cfg.dictionary.vocabulary.join(", "))
+    };
+    let stt = SttClient::new(&cfg.stt, vocab_prompt);
     let blacklist = load_blacklist(&cfg);
     let socket_path = cfg.ipc.socket_path();
 

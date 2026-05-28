@@ -27,6 +27,14 @@ pub struct Config {
     pub filter: Filter,
     pub injection: Injection,
     pub ipc: Ipc,
+    #[serde(default)]
+    pub dictionary: Dictionary,
+    #[serde(default)]
+    pub snippets: Snippets,
+    #[serde(default)]
+    pub llm: Llm,
+    #[serde(default)]
+    pub workflow: Vec<Workflow>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -137,6 +145,71 @@ pub struct Ipc {
     pub state_max_hz: u32,
 }
 
+/// Custom vocabulary (biases the STT prompt) and literal corrections (post-fix).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct Dictionary {
+    /// Words/names joined into the whisper prompt to bias recognition.
+    #[serde(default)]
+    pub vocabulary: Vec<String>,
+    /// Case-insensitive whole-word replacements applied to accepted transcripts.
+    #[serde(default)]
+    pub corrections: std::collections::BTreeMap<String, String>,
+}
+
+/// Text-expansion shortcuts (trigger -> replacement, with placeholders).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct Snippets {
+    /// Trigger phrase -> replacement. Replacement may contain `{{DATE}}`,
+    /// `{{TIME}}`, `{{CLIPBOARD}}` placeholders.
+    #[serde(default)]
+    pub entries: std::collections::BTreeMap<String, String>,
+}
+
+/// OpenAI-compatible chat endpoint used by AI workflows (local ollama by default).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Llm {
+    #[serde(default = "default_llm_base_url")]
+    pub base_url: String,
+    /// Model name. Empty disables LLM workflows.
+    #[serde(default)]
+    pub model: String,
+    /// Bearer token for cloud providers; empty for local.
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default = "default_llm_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+impl Default for Llm {
+    fn default() -> Self {
+        Self {
+            base_url: default_llm_base_url(),
+            model: String::new(),
+            api_key: String::new(),
+            timeout_secs: default_llm_timeout_secs(),
+        }
+    }
+}
+
+fn default_llm_base_url() -> String {
+    "http://127.0.0.1:11434/v1".to_string()
+}
+
+fn default_llm_timeout_secs() -> u64 {
+    20
+}
+
+/// One AI workflow: a system prompt plus the app window-classes it auto-applies to.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct Workflow {
+    pub name: String,
+    #[serde(default)]
+    pub prompt: String,
+    /// Focused-window classes that auto-select this workflow (empty = manual only).
+    #[serde(default)]
+    pub apps: Vec<String>,
+}
+
 impl Config {
     /// Load config from `explicit` if given, else `$XDG_CONFIG_HOME/whispy/config.toml`,
     /// else the built-in defaults.
@@ -238,6 +311,8 @@ mod tests {
         assert_eq!(cfg.audio.rate, 16000);
         assert_eq!(cfg.audio.channels, 1);
         assert!(cfg.filter.fuzzy_ratio > 0.0);
+        assert!(cfg.workflow.is_empty());
+        assert_eq!(cfg.llm.base_url, "http://127.0.0.1:11434/v1");
     }
 
     #[test]

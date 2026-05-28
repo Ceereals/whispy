@@ -14,8 +14,16 @@ use crate::audio::{Capture, Recorder};
 use crate::config::{self, Config};
 use crate::filter::{self, Decision, Hallucinations, Metrics};
 use crate::inject::Injector;
+use crate::pipeline::{self, AppContext};
 use crate::state::{Status, now};
 use crate::stt::{SttClient, Transcription};
+
+/// What a recording session needs to post-process its transcript: the workflow
+/// the hotkey asked for and the window that was focused when capture began.
+struct StartCtx {
+    workflow: Option<String>,
+    window_class: Option<String>,
+}
 
 /// Shared application state wired into the socket server.
 pub struct App {
@@ -26,6 +34,7 @@ pub struct App {
     blacklist: Arc<Hallucinations>,
     injector: Injector,
     capture: Mutex<Option<Capture>>,
+    start_ctx: Mutex<Option<StartCtx>>,
 }
 
 impl App {
@@ -40,6 +49,7 @@ impl App {
             blacklist: Arc::new(blacklist),
             injector,
             capture: Mutex::new(None),
+            start_ctx: Mutex::new(None),
         }
     }
 
@@ -48,13 +58,13 @@ impl App {
         match cmd {
             Cmd::Ping => Resp::ok(),
             Cmd::Status => Resp::status(self.status.snapshot()),
-            Cmd::Start => self.start(),
+            Cmd::Start { workflow } => self.start(workflow),
             Cmd::Stop => self.stop(),
             Cmd::Cancel => self.cancel(),
         }
     }
 
-    fn start(self: &Arc<Self>) -> Resp {
+    fn start(self: &Arc<Self>, workflow: Option<String>) -> Resp {
         let mut slot = self.capture.lock().expect("capture lock");
         if let Some(cap) = slot.as_ref() {
             if cap.auto_stopped() {
@@ -92,6 +102,12 @@ impl App {
             Ok(cap) => {
                 self.status.recording(0.0);
                 *slot = Some(cap);
+                // Snapshot the workflow + focused window now: this is the target
+                // the transcript will be post-processed for and pasted into.
+                *self.start_ctx.lock().expect("start_ctx lock") = Some(StartCtx {
+                    workflow,
+                    window_class: pipeline::active_window_class(),
+                });
                 info!("recording started");
                 Resp::ok()
             }
@@ -147,6 +163,7 @@ impl App {
         if let Some(cap) = self.capture.lock().expect("capture lock").take() {
             cap.cancel();
         }
+        *self.start_ctx.lock().expect("start_ctx lock") = None;
         self.status.idle();
         Resp::ok()
     }
@@ -183,6 +200,20 @@ impl App {
 
         match decision {
             Decision::Accept(text) => {
+                // Post-process for the session's target window (corrections,
+                // snippets, then the selected AI workflow). Never fails: LLM
+                // errors fall back to the raw transcript inside `process`.
+                let ctx = {
+                    let guard = self.start_ctx.lock().expect("start_ctx lock");
+                    guard
+                        .as_ref()
+                        .map(|c| AppContext {
+                            workflow: c.workflow.clone(),
+                            window_class: c.window_class.clone(),
+                        })
+                        .unwrap_or_default()
+                };
+                let text = pipeline::process(text, &self.cfg, &ctx);
                 info!(chars = text.len(), lang = ?transcription.language, "transcript accepted");
                 match self.injector.inject(&text) {
                     Ok(()) => self.status.success(),

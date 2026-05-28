@@ -28,13 +28,21 @@ struct Args {
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Begin capture.
-    Start,
+    Start {
+        /// AI workflow to apply to the transcript before injection.
+        #[arg(long, value_name = "NAME")]
+        workflow: Option<String>,
+    },
     /// Stop capture and transcribe.
     Stop,
     /// Stop capture and discard.
     Cancel,
     /// Toggle capture (start if idle, else stop).
-    Toggle,
+    Toggle {
+        /// AI workflow to apply when this toggle starts capture.
+        #[arg(long, value_name = "NAME")]
+        workflow: Option<String>,
+    },
     /// Print the current state.
     Status,
     /// Healthcheck.
@@ -46,12 +54,12 @@ fn main() -> ExitCode {
     let socket = args.socket.unwrap_or_else(default_socket);
 
     let result = match args.command {
-        Command::Start => send(&socket, Cmd::Start),
+        Command::Start { workflow } => send(&socket, Cmd::Start { workflow }),
         Command::Stop => send(&socket, Cmd::Stop),
         Command::Cancel => send(&socket, Cmd::Cancel),
         Command::Status => send(&socket, Cmd::Status),
         Command::Ping => send(&socket, Cmd::Ping),
-        Command::Toggle => toggle(&socket),
+        Command::Toggle { workflow } => toggle(&socket, workflow),
     };
 
     match result {
@@ -71,13 +79,20 @@ fn main() -> ExitCode {
 }
 
 /// Query the current state, then start if idle (or stop if a capture is active).
-fn toggle(socket: &Path) -> std::io::Result<Resp> {
+fn toggle(socket: &Path, workflow: Option<String>) -> std::io::Result<Resp> {
     let status = send(socket, Cmd::Status)?;
     let active = matches!(
         status.snapshot.as_ref().map(|s| s.state),
         Some(State::Recording) | Some(State::Transcribing)
     );
-    send(socket, if active { Cmd::Stop } else { Cmd::Start })
+    send(
+        socket,
+        if active {
+            Cmd::Stop
+        } else {
+            Cmd::Start { workflow }
+        },
+    )
 }
 
 fn send(socket: &Path, cmd: Cmd) -> std::io::Result<Resp> {

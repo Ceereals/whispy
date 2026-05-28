@@ -18,6 +18,7 @@ const BOUNDARY: &str = "----whispyFormBoundary7MA4YWxkTrZu0gW";
 pub struct SttClient {
     base_url: String,
     language: String,
+    prompt: Option<String>,
     agent: ureq::Agent,
 }
 
@@ -79,10 +80,12 @@ struct Segment {
 
 impl SttClient {
     /// Build from config (base URL = `http://host:port`).
-    pub fn new(cfg: &crate::config::Stt) -> Self {
+    pub fn new(cfg: &crate::config::Stt, prompt: Option<String>) -> Self {
+        let prompt = prompt.filter(|p| !p.trim().is_empty());
         Self {
             base_url: format!("http://{}:{}", cfg.host, cfg.port),
             language: cfg.language.clone(),
+            prompt,
             agent: ureq::Agent::new(),
         }
     }
@@ -97,7 +100,7 @@ impl SttClient {
             "encoded WAV for inference"
         );
 
-        let body = build_multipart(&self.language, &wav);
+        let body = build_multipart(&self.language, self.prompt.as_deref(), &wav);
         let url = format!("{}/inference", self.base_url);
 
         let resp = self
@@ -156,7 +159,7 @@ fn encode_wav(samples: &[i16]) -> Result<Vec<u8>, SttError> {
 
 /// Assemble the `multipart/form-data` body whisper-server expects: the text
 /// fields (`response_format`, `language`, `temperature`) and the WAV `file` part.
-fn build_multipart(language: &str, wav: &[u8]) -> Vec<u8> {
+fn build_multipart(language: &str, prompt: Option<&str>, wav: &[u8]) -> Vec<u8> {
     let mut body = Vec::new();
 
     let mut text_field = |name: &str, value: &str| {
@@ -171,6 +174,9 @@ fn build_multipart(language: &str, wav: &[u8]) -> Vec<u8> {
     text_field("response_format", "verbose_json");
     text_field("language", language);
     text_field("temperature", "0.0");
+    if let Some(p) = prompt {
+        text_field("prompt", p);
+    }
 
     // File part: the WAV bytes go in raw, not as UTF-8.
     body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
@@ -285,7 +291,7 @@ mod tests {
 
     #[test]
     fn multipart_contains_required_fields() {
-        let body = build_multipart("auto", b"WAVDATA");
+        let body = build_multipart("auto", None, b"WAVDATA");
         let s = String::from_utf8_lossy(&body);
         assert!(s.contains("name=\"response_format\""));
         assert!(s.contains("verbose_json"));
@@ -295,5 +301,13 @@ mod tests {
         assert!(s.contains("Content-Type: audio/wav"));
         assert!(s.contains("WAVDATA"));
         assert!(s.ends_with(&format!("--{BOUNDARY}--\r\n")));
+    }
+
+    #[test]
+    fn multipart_includes_prompt_when_present() {
+        let body = build_multipart("auto", Some("Hyprland, Quickshell"), b"WAV");
+        let s = String::from_utf8_lossy(&body);
+        assert!(s.contains("name=\"prompt\""));
+        assert!(s.contains("Hyprland, Quickshell"));
     }
 }
