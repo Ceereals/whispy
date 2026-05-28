@@ -63,32 +63,58 @@ Item {
         _prevState = dictationState
     }
 
-    // ── Surface ────────────────────────────────────────────────────────────
+    // ── Background + shadow ────────────────────────────────────────────────
+    // The pill body and its drop shadow. Isolated on its own layer so the blur
+    // is regenerated only when the silhouette changes (width morph / enter),
+    // NOT on every inner-content frame (bars, spinner, glow) — that re-render
+    // was the source of the global jank.
     Rectangle {
-        id: surface
+        id: shadowBg
         anchors.fill: parent
         radius: Tokens.pillRadius
         color: Tokens.pillBg
         border.color: Tokens.pillBorder
         border.width: 1
         antialiasing: true
+        layer.enabled: true
+        layer.effect: MultiEffect {
+            shadowEnabled: true
+            shadowColor: Tokens.pillShadowColor
+            shadowBlur: Tokens.pillShadowBlur
+            shadowVerticalOffset: Tokens.pillShadowOffsetY
+            shadowHorizontalOffset: 0
+        }
+    }
+
+    // ── Surface ────────────────────────────────────────────────────────────
+    // Transparent clip container for the animated state layers; body/border/
+    // shadow come from shadowBg beneath.
+    Rectangle {
+        id: surface
+        anchors.fill: parent
+        radius: Tokens.pillRadius
+        color: "transparent"
+        antialiasing: true
         clip: true
 
-        // Recording ambient glow (1Hz pulse, independent of rms)
+        // Recording ambient glow (pulse, independent of rms).
+        // Pulse OPACITY (cheap GPU compositing), not border.width — animating a
+        // rounded-rect border re-tessellates the stroke every frame and stutters.
         Rectangle {
+            id: glow
             anchors.fill: parent
             radius: parent.radius
             color: "transparent"
             border.color: Tokens.accentRecordingGlow
-            border.width: 0
-            opacity: (root.dictationState === "recording" && root.showGlow) ? 1 : 0
-            Behavior on opacity { NumberAnimation { duration: Tokens.durFadeContent } }
-
-            SequentialAnimation on border.width {
-                running: root.dictationState === "recording" && root.showGlow
+            border.width: Tokens.glowBorderWidth   // FIXED — never animated
+            antialiasing: true
+            visible: root.dictationState === "recording" && root.showGlow
+            opacity: 0
+            SequentialAnimation on opacity {
+                running: glow.visible
                 loops:   Animation.Infinite
-                NumberAnimation { from: 0; to: 4; duration: Tokens.durRecPulse / 2; easing.type: Easing.InOutSine }
-                NumberAnimation { from: 4; to: 0; duration: Tokens.durRecPulse / 2; easing.type: Easing.InOutSine }
+                NumberAnimation { from: Tokens.glowPulseMin; to: 1.0; duration: Tokens.durRecPulse / 2; easing.type: Easing.InOutSine }
+                NumberAnimation { from: 1.0; to: Tokens.glowPulseMin; duration: Tokens.durRecPulse / 2; easing.type: Easing.InOutSine }
             }
         }
 
@@ -109,37 +135,61 @@ Item {
             visible: opacity > 0.01
             Behavior on opacity { NumberAnimation { duration: Tokens.durFadeContent; easing.type: Easing.OutQuad } }
 
-            // Smoothed RMS, ticked on every rms change
-            property real smoothedRms: 0
+            // ── Voice → waveform pipeline ──────────────────────────────────
+            // Mic RMS is tiny (peak ~0.015). Normalize by sensitivity, lift
+            // quiet speech with a perceptual curve → `target` (0..1).
+            property real target: 0
             Connections {
                 target: root
                 function onRmsChanged() {
-                    recordingLayer.smoothedRms +=
-                        (root.rms - recordingLayer.smoothedRms) * Tokens.rmsSmoothing
+                    const n = Math.min(1, Math.max(0, root.rms / Tokens.waveSensitivity))
+                    recordingLayer.target = Math.pow(n, Tokens.wavePerceptual)
                 }
             }
 
-            // Per-frame wobble timer (sin envelope per bar)
-            property real t: 0
-            NumberAnimation on t {
-                running: root.dictationState === "recording"
-                loops:   Animation.Infinite
-                from:    0; to: 6.2831853; duration: 4000
+            // Driven by a ~60 Hz Timer (NOT FrameAnimation: this layer-shell
+            // overlay isn't continuously repainted, so FrameAnimation never
+            // ticks — but writing env/phase here schedules the repaint itself).
+            // `env` is a time-constant follower (fast attack / slow release);
+            // `phase` advances the per-bar organic wobble. Decoupled from the
+            // ~20 Hz RMS feed so motion stays fluid and realtime.
+            property real env:   0
+            property real phase: 0
+            function _seed() { env = 0; phase = 0 }
+            onVisibleChanged: if (visible) _seed()
+
+            Timer {
+                interval: Tokens.waveTickMs
+                repeat:   true
+                running:  root.dictationState === "recording"
+                onTriggered: {
+                    const dt  = Tokens.waveTickMs / 1000
+                    const t   = recordingLayer.target
+                    const tau = t > recordingLayer.env ? Tokens.waveAttackTau
+                                                       : Tokens.waveReleaseTau
+                    recordingLayer.env   += (t - recordingLayer.env) * (1 - Math.exp(-dt / tau))
+                    recordingLayer.phase += dt
+                }
             }
 
+            // Centered group: [mic][waveform][optional label]. Centering the
+            // whole group (not just the bars) keeps left/right padding symmetric.
             Row {
-                anchors.fill: parent
-                anchors.leftMargin: 14
-                anchors.rightMargin: 14
-                spacing: showLabel ? 12 : 12
+                anchors.centerIn: parent
+                spacing: Tokens.micWaveGap
 
-                // Mic icon
+                // Mic icon. The path is authored in a 24×24 viewBox, so it's drawn
+                // into a 24px Shape and scaled down to micIconSize (centred via the
+                // default Item.Center scale origin) — fixes both oversize + offset.
                 Item {
-                    width: 16; height: 16
+                    width: Tokens.micIconSize; height: Tokens.micIconSize
                     anchors.verticalCenter: parent.verticalCenter
                     Shape {
-                        anchors.fill: parent
+                        width: 24; height: 24
+                        anchors.centerIn: parent
+                        scale: Tokens.micIconSize / 24
                         antialiasing: true
+                        preferredRendererType: Shape.CurveRenderer   // analytic AA — crisp when scaled
                         ShapePath {
                             strokeColor: Tokens.accentRecording
                             strokeWidth: 2
@@ -151,7 +201,7 @@ Item {
                     }
                 }
 
-                // Waveform bars
+                // Waveform bars — mirror peak biased to its own centre.
                 Item {
                     width: Tokens.waveBarCount * Tokens.waveBarWidth
                            + (Tokens.waveBarCount - 1) * Tokens.waveBarGap
@@ -170,30 +220,33 @@ Item {
                                 color: Tokens.accentRecording
                                 anchors.verticalCenter: parent.verticalCenter
 
-                                readonly property real centerness:
-                                    1 - Math.abs(index - (Tokens.waveBarCount - 1) / 2)
-                                        / ((Tokens.waveBarCount - 1) / 2)
-                                readonly property real envelope: 0.35 + centerness * 0.65
-                                readonly property real wobble:
-                                    (Math.sin(recordingLayer.t * 3 + index * 0.7)
-                                   + Math.sin(recordingLayer.t * 5.3 + index * 1.4)) * 0.18
-                                readonly property real targetH:
-                                    Math.max(3, Math.min(
-                                        Tokens.waveMaxHeight,
-                                        (recordingLayer.smoothedRms * envelope * 1.6
-                                       + wobble * recordingLayer.smoothedRms
-                                       + 0.18) * Tokens.waveMaxHeight))
+                                // Mirror: distance from the centre drives a
+                                // centre-bias hump (taller middle, shorter edges).
+                                readonly property real dist:
+                                    Math.abs(index - (Tokens.waveBarCount - 1) / 2)
+                                readonly property real hump:
+                                    1 - (dist / ((Tokens.waveBarCount - 1) / 2)) * Tokens.waveHump
+                                // Organic per-bar motion: two detuned sines with a
+                                // per-bar phase. Multiplied into the level below, so
+                                // its depth is gated by loudness → silence stays
+                                // flat, speech is lively and non-uniform.
+                                readonly property real wob:
+                                    Math.sin(recordingLayer.phase * Tokens.waveWob1 + dist * 0.9)
+                                  + Math.sin(recordingLayer.phase * Tokens.waveWob2 + dist * 1.7)
+                                readonly property real level:
+                                    Math.min(1, Math.max(0,
+                                        recordingLayer.env * hump
+                                            * (1 + wob * 0.5 * Tokens.waveOrganic)))
 
-                                height: targetH
-                                opacity: 0.55 + Math.min(0.45, targetH / Tokens.waveMaxHeight)
-                                Behavior on height {
-                                    NumberAnimation { duration: Tokens.durBar; easing.type: Easing.OutQuad }
-                                }
+                                height: Tokens.waveMinHeight
+                                      + level * (Tokens.waveMaxHeight - Tokens.waveMinHeight)
+                                opacity: 0.55 + Math.min(0.45, level)
                             }
                         }
                     }
                 }
 
+                // Optional label
                 Text {
                     visible: root.showLabel
                     anchors.verticalCenter: parent.verticalCenter
@@ -380,15 +433,5 @@ Item {
                 }
             }
         }
-    }
-
-    // Drop shadow on the whole pill (Qt6 MultiEffect — no QtGraphicalEffects)
-    layer.enabled: true
-    layer.effect: MultiEffect {
-        shadowEnabled: true
-        shadowColor: Tokens.pillShadowColor
-        shadowBlur: Tokens.pillShadowBlur
-        shadowVerticalOffset: Tokens.pillShadowOffsetY
-        shadowHorizontalOffset: 0
     }
 }

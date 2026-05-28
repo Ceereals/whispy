@@ -41,7 +41,7 @@ Run with `quickshell -p ~/.config/quickshell/shell.qml`.
 ## Requirements
 
 - Quickshell with `Quickshell.Wayland`, `Quickshell.Io` modules
-- Qt 6.5+ (uses `QtQuick.Effects.MultiEffect`, `QtQuick.Shapes` `dashOffset`)
+- Qt 6.6+ (uses `QtQuick.Effects.MultiEffect`, `QtQuick.Shapes` `dashOffset` + `Shape.CurveRenderer`)
 - Wayland compositor with wlr-layer-shell (Hyprland, Sway, river…)
 - Font: Inter (or any sans-serif fallback — see `Tokens.fontFamily`)
 
@@ -62,7 +62,7 @@ rename) at up to 20 Hz during recording.
 ```
 
 - **state**: drives all visuals.
-- **rms**: 0..1, drives the waveform when `state === "recording"`. Smoothed internally with `Tokens.rmsSmoothing` per update.
+- **rms**: 0..1, drives the waveform when `state === "recording"`. Smoothed internally by a VU-style follower (`Tokens.waveAttackTau` / `waveReleaseTau`), rendered at `Tokens.waveTickMs`.
 - **error_kind**: present in the daemon's JSON (kept for schema stability); the pill ignores it and renders `error_message`.
 - **error_message**: shown verbatim in the error pill. Width auto-fits (180–360 px), then ellipses.
 - **timestamp**: epoch float (fractional seconds). If older than `Tokens.staleThresholdMs` (5 s), the pill forces back to idle.

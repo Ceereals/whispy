@@ -51,7 +51,6 @@ QtObject {
     readonly property int    durLeave:             250
     readonly property int    durLeaveError:        300
     readonly property int    durFadeContent:       180
-    readonly property int    durBar:               100     // single bar interp
     readonly property int    durShake:             250
     readonly property int    durCheckDraw:         220
     readonly property int    durSpinner:           900
@@ -62,7 +61,28 @@ QtObject {
     readonly property int    waveBarWidth:         3
     readonly property int    waveBarGap:           2
     readonly property int    waveMaxHeight:        24
-    readonly property real   rmsSmoothing:         0.22    // 0..1 per tick toward target
+    readonly property int    waveMinHeight:        2       // bar floor in px
+    // Meter mapping. Measured speech RMS is tiny (median ~0.0024, peak ~0.015,
+    // silence ~0). Normalize to 0..1 by sensitivity, then a perceptual curve
+    // (<1) lifts quiet speech. Rendered every vsync frame: a time-constant
+    // follower (fast attack / slow release, VU ballistics) chases the level,
+    // and a per-bar organic wobble — gated by the level so silence stays flat —
+    // gives lively, non-uniform motion. Centre-biased (mirror) via waveHump.
+    readonly property real   waveSensitivity:      0.015   // rms that maps to full height
+    readonly property real   wavePerceptual:       0.6     // power curve (<1 = expand quiet)
+    readonly property real   waveAttackTau:        0.05    // follower rise time-const (s, fast)
+    readonly property real   waveReleaseTau:       0.22    // follower fall time-const (s, slow)
+    readonly property real   waveHump:             0.55    // centre bias: edge height falloff
+    readonly property real   waveOrganic:          0.6     // per-bar wobble depth (level-gated)
+    readonly property real   waveWob1:             5.0     // organic sine 1 speed (rad/s)
+    readonly property real   waveWob2:             8.3     // organic sine 2 speed (rad/s)
+    readonly property int    waveTickMs:           16      // follower/render tick (~60 fps)
+    readonly property int    micIconSize:          18      // recording mic visual box (24-space path scaled to fit)
+    readonly property int    micWaveGap:           8       // mic → waveform gap (recording Row spacing)
+
+    // Recording glow pulse (opacity-animated, fixed border width)
+    readonly property int    glowBorderWidth:      3
+    readonly property real   glowPulseMin:         0.25    // opacity floor of the pulse
 
     // ── Lifecycle (auto-hide after success/error) ─────────────────────────
     readonly property int    holdSuccessMs:        600
