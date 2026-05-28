@@ -1,56 +1,53 @@
+<div align="center">
+
 # whispy
 
-System-wide push-to-talk dictation for **Hyprland** (Wayland), inspired by TypeWhisper.
-Hold a hotkey, speak, release — the transcript is injected into the focused field. A
-Quickshell pill shows live state.
+**Push-to-talk dictation for Hyprland.** Hold a key, speak, release — your words land in the focused field.
 
-> **Status:** v0.1.0 — functional. See [`docs/spike-fork-vs-build.md`](docs/spike-fork-vs-build.md)
-> for the build-vs-fork decision and the roadmap below for progress.
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![AUR](https://img.shields.io/aur/version/whispy?label=AUR)](https://aur.archlinux.org/packages/whispy)
+[![CI](https://github.com/Ceereals/whispy/actions/workflows/ci.yml/badge.svg)](https://github.com/Ceereals/whispy/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org)
 
-## Architecture
+[Quickstart](#quickstart) · [Install](#install) · [Setup](#setup) · [How it works](#how-it-works) · [Configuration](#configuration) · [Requirements](#requirements)
 
+<!-- Drop a real capture here: record the pill + a dictation into an app, save as docs/demo.gif -->
+![whispy demo](docs/demo.gif)
+
+</div>
+
+Local, fast, Wayland-native dictation: a resident daemon keeps a Vulkan
+[whisper.cpp](https://github.com/ggerganov/whisper.cpp) model in RAM, a thin client is fired
+from your Hyprland binds, and a [Quickshell](https://quickshell.org) pill shows live state.
+Speech never leaves your machine.
+
+## Quickstart
+
+```sh
+paru -S whispy            # install (Arch/CachyOS)
+whispy-daemon setup       # build whisper.cpp, fetch model, enable service
 ```
-Hyprland keybind ──► whispy-client ──(unix socket)──► whispy-daemon ──► whisper-server (Vulkan)
-                                                          │
-                                                          ├─► state.json ──► Quickshell pill
-                                                          └─► wl-copy + ydotool ──► focused app
+
+Then add a toggle bind to Hyprland (press to start, press again to stop):
+
+```ini
+bind = SUPER ALT, Space, exec, whispy-client toggle
+bind = , Escape, exec, whispy-client cancel
 ```
 
-- **whispy-daemon** — resident service: supervises a `whisper-server` child (model stays in
-  RAM), captures audio (PipeWire), filters hallucinations, injects text, publishes state.
-- **whispy-client** — tiny binary called from Hyprland binds (`start`/`stop`/`cancel`).
-- **whisper-server** — whisper.cpp built with the Vulkan backend (runs on AMD RDNA4, no ROCm).
-- **pill UI** — Quickshell layer overlay reading the state file (see [`ui/quickshell/`](ui/quickshell/)).
-
-State/IPC paths (everything is namespaced `whispy`):
-- socket: `$XDG_RUNTIME_DIR/whispy/whispy.sock`
-- state: `$XDG_RUNTIME_DIR/whispy/state.json` (atomic writes, ≤20 Hz) ← the pill UI reads this
-- logs: `$XDG_STATE_HOME/whispy/{daemon.log,whisper-server.log}` (JSON lines)
-
-## Layout
-
-```
-crates/common   shared protocol + state types (serde)
-crates/daemon   the daemon (audio, stt, filter, inject, state, server, whisper)
-crates/client   the thin client
-config/         default.toml, hallucinations.toml
-systemd/        whispy-daemon.service (user unit)
-scripts/        benchmark.sh, setup-ydotool.sh
-packaging/aur/  PKGBUILD (whispy) + whispy-git/PKGBUILD
-ui/quickshell/  Quickshell pill overlay (reads state.json)
-docs/           spike, benchmark, hyprland setup
-```
+Reload Hyprland, press **SUPER+ALT+Space**, speak, press again — the text is typed into
+your focused field. See [`docs/hyprland-setup.md`](docs/hyprland-setup.md) for the full bind set.
 
 ## Install
 
-**Arch / CachyOS (AUR):**
+**Arch / CachyOS (AUR)** — recommended:
 
 ```sh
-paru -S whispy        # or: yay -S whispy
+paru -S whispy            # or: yay -S whispy
 ```
 
-**Any distro (script):** clones nothing — run it from the repo. On Arch it routes
-to the AUR package; elsewhere it builds from source into `~/.local/bin`.
+**Any distro (script)** — on Arch it routes to the AUR package; elsewhere it builds from
+source into `~/.local/bin`:
 
 ```sh
 ./install.sh
@@ -65,27 +62,87 @@ install -Dm755 target/release/whispy-{daemon,client} -t ~/.local/bin
 
 ## Setup
 
-After install, bootstrap the runtime once. This **builds whisper.cpp (Vulkan)**,
-**downloads the model**, grants ydotool uinput access, seeds `~/.config/whispy`,
-and enables the systemd user service:
+Bootstrap the runtime once. This **builds whisper.cpp (Vulkan)**, **downloads the model**,
+grants ydotool uinput access, seeds `~/.config/whispy`, and enables the systemd user service:
 
 ```sh
 whispy-daemon setup                 # add --quickshell for the pill overlay
 ```
 
-Granular steps are available too: `whispy-daemon setup doctor|whisper|model|ydotool|systemd|quickshell`.
+Run any step on its own with:
+
+```sh
+whispy-daemon setup doctor|whisper|model|ydotool|systemd|quickshell
+```
+
 `setup` prints the Hyprland keybinds to add at the end — see
-[`docs/hyprland-setup.md`](docs/hyprland-setup.md) for details.
+[`docs/hyprland-setup.md`](docs/hyprland-setup.md).
+
+## How it works
+
+```
+Hyprland keybind ──► whispy-client ──(unix socket)──► whispy-daemon ──► whisper-server (Vulkan)
+                                                          │
+                                                          ├─► state.json ──► Quickshell pill
+                                                          └─► inject ──► focused app
+```
+
+- **whispy-daemon** — resident service: supervises a `whisper-server` child (model stays
+  in RAM), captures audio (PipeWire), filters hallucinations, injects text, publishes state.
+- **whispy-client** — tiny binary called from Hyprland binds (`start` / `stop` / `cancel` / `toggle`).
+- **whisper-server** — whisper.cpp built with the Vulkan backend (runs on AMD RDNA4, no ROCm).
+- **pill UI** — Quickshell layer overlay reading the state file ([`ui/quickshell/`](ui/quickshell/)).
+
+**Two injection modes** (`injection.mode`):
+
+| Mode | How | Best for |
+|------|-----|----------|
+| `paste` *(default)* | `wl-copy` + `ydotool` Ctrl+V, with clipboard save/restore | GUI fields; preserves accents |
+| `type` | types directly via `wtype` (virtual keyboard) | terminals too; touches no clipboard |
+
+State & IPC paths (everything is namespaced `whispy`):
+
+- socket — `$XDG_RUNTIME_DIR/whispy/whispy.sock`
+- state — `$XDG_RUNTIME_DIR/whispy/state.json` (atomic writes, ≤20 Hz) ← the pill reads this
+- logs — `$XDG_STATE_HOME/whispy/{daemon.log,whisper-server.log}` (JSON lines)
+
+## Configuration
+
+Defaults are baked into the daemon (see [`config/default.toml`](config/default.toml)). Override
+any of them by copying the file to `$XDG_CONFIG_HOME/whispy/config.toml`. Common knobs: the
+model and `whisper-server` paths (`[stt]`), the hallucination filter thresholds (`[filter]`),
+and `injection.mode` to switch between paste and type.
 
 ## Requirements
 
-- Hyprland / Wayland, PipeWire (`pw-record`), `wl-clipboard`, `libnotify`,
-  `ydotool` (paste mode) and/or `wtype` (type mode).
-- A Vulkan-capable GPU (developed on RX 9070 XT / RDNA4); `vulkan-icd-loader`.
-- Build tools for `setup whisper`: `git`, `cmake`, a C/C++ compiler.
-- Optional: [Quickshell](https://quickshell.org) (Qt 6.5+) for the pill overlay.
+- Hyprland / Wayland, PipeWire (`pw-record`), `wl-clipboard`, `libnotify`
+- `ydotool` (paste mode) and/or `wtype` (type mode)
+- A Vulkan-capable GPU (developed on RX 9070 XT / RDNA4) + `vulkan-icd-loader`
+- Build tools for `setup whisper`: `git`, `cmake`, a C/C++ compiler
+- Optional: [Quickshell](https://quickshell.org) (Qt 6.5+) for the pill overlay
 
-## Roadmap
+<details>
+<summary><b>Project layout</b></summary>
+
+```
+crates/common   shared protocol + state types (serde)
+crates/daemon   the daemon (audio, stt, filter, inject, state, server, whisper)
+crates/client   the thin client
+config/         default.toml, hallucinations.toml
+systemd/        whispy-daemon.service (user unit)
+scripts/        benchmark.sh, setup-ydotool.sh
+packaging/aur/  PKGBUILD (whispy) + whispy-git/PKGBUILD
+ui/quickshell/  Quickshell pill overlay (reads state.json)
+docs/           spike, benchmark, hyprland setup
+```
+
+See [`docs/spike-fork-vs-build.md`](docs/spike-fork-vs-build.md) for the build-vs-fork
+decision and [`docs/stt-benchmark.md`](docs/stt-benchmark.md) for model benchmarks.
+
+</details>
+
+<details>
+<summary><b>Roadmap</b></summary>
 
 - [x] Spike: build vs fork → full custom (Rust)
 - [x] Step 0 — scaffold cargo workspace
@@ -97,3 +154,9 @@ Granular steps are available too: `whispy-daemon setup doctor|whisper|model|ydot
 - [x] Step 6 — thin client (start/stop/cancel/toggle) + Hyprland binds doc
 - [x] Step 7 — pill UI integration (module in `ui/quickshell/`)
 - [x] Step 8 — QoL (cancel-on-Escape bind, notify-send on hard errors)
+
+</details>
+
+## License
+
+[MIT](LICENSE) © Riccardo Romoli
