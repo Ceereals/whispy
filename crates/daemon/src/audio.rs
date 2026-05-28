@@ -27,6 +27,16 @@ const NORM_TARGET: f32 = 32_440.0;
 /// Peaks at or below this are treated as silence and left unamplified.
 const SILENCE_FLOOR: i32 = 200;
 
+/// Flags shared between a [`Capture`] and its reader thread. `stop` is set by the
+/// owner to request shutdown; `auto_stopped` and `speech_heard` are set by the
+/// reader to report why it ended and whether it heard any speech.
+#[derive(Clone, Default)]
+struct Signals {
+    stop: Arc<AtomicBool>,
+    auto_stopped: Arc<AtomicBool>,
+    speech_heard: Arc<AtomicBool>,
+}
+
 /// Spawns capture sessions using the configured audio parameters.
 #[derive(Clone)]
 pub struct Recorder {
@@ -67,21 +77,15 @@ impl Recorder {
             .spawn()?;
 
         let stdout = child.stdout.take().expect("stdout piped");
-        let stop = Arc::new(AtomicBool::new(false));
-        let auto_stopped = Arc::new(AtomicBool::new(false));
-        let speech_heard = Arc::new(AtomicBool::new(false));
+        let signals = Signals::default();
 
         let cfg = self.cfg.clone();
-        let stop_t = Arc::clone(&stop);
-        let auto_t = Arc::clone(&auto_stopped);
-        let speech_t = Arc::clone(&speech_heard);
+        let reader_signals = signals.clone();
         let reader = std::thread::spawn(move || {
             read_loop(
                 stdout,
                 &cfg,
-                stop_t,
-                auto_t,
-                speech_t,
+                reader_signals,
                 on_rms,
                 on_too_long,
                 on_silence,
@@ -92,9 +96,7 @@ impl Recorder {
         Ok(Capture {
             child,
             reader: Some(reader),
-            stop,
-            auto_stopped,
-            speech_heard,
+            signals,
         })
     }
 }
@@ -103,15 +105,13 @@ impl Recorder {
 pub struct Capture {
     child: Child,
     reader: Option<JoinHandle<Vec<i16>>>,
-    stop: Arc<AtomicBool>,
-    auto_stopped: Arc<AtomicBool>,
-    speech_heard: Arc<AtomicBool>,
+    signals: Signals,
 }
 
 impl Capture {
     /// True if capture hit the max-duration cap.
     pub fn auto_stopped(&self) -> bool {
-        self.auto_stopped.load(Ordering::Relaxed)
+        self.signals.auto_stopped.load(Ordering::Relaxed)
     }
 
     /// Stop capture and return the peak-normalized samples, or `None` if the clip
@@ -120,7 +120,7 @@ impl Capture {
     /// confidently hallucinate "Thank you." / "All right." on pure silence).
     pub fn finish(mut self, min_samples: usize) -> Option<Vec<i16>> {
         let buf = self.teardown();
-        let speech = self.speech_heard.load(Ordering::Relaxed);
+        let speech = self.signals.speech_heard.load(Ordering::Relaxed);
         debug!(
             samples = buf.len(),
             min = min_samples,
@@ -141,7 +141,7 @@ impl Capture {
 
     /// Signal stop, kill `pw-record` (closing the pipe -> reader EOF), and join.
     fn teardown(&mut self) -> Vec<i16> {
-        self.stop.store(true, Ordering::Relaxed);
+        self.signals.stop.store(true, Ordering::Relaxed);
         self.child.kill().ok();
         let buf = self
             .reader
@@ -156,9 +156,7 @@ impl Capture {
 fn read_loop<R, M, S>(
     stdout: ChildStdout,
     cfg: &Audio,
-    stop: Arc<AtomicBool>,
-    auto_stopped: Arc<AtomicBool>,
-    speech_heard: Arc<AtomicBool>,
+    signals: Signals,
     on_rms: R,
     on_too_long: M,
     on_silence: S,
@@ -194,7 +192,7 @@ where
     let mut too_long = false;
 
     'outer: loop {
-        if stop.load(Ordering::Relaxed) {
+        if signals.stop.load(Ordering::Relaxed) {
             break;
         }
         let n = match reader.read(&mut chunk) {
@@ -250,10 +248,10 @@ where
         leftover.drain(..full);
     }
 
-    speech_heard.store(speech_seen, Ordering::Relaxed);
+    signals.speech_heard.store(speech_seen, Ordering::Relaxed);
 
     if too_long {
-        auto_stopped.store(true, Ordering::Relaxed);
+        signals.auto_stopped.store(true, Ordering::Relaxed);
         on_too_long();
     } else if hit_silence {
         debug!(silent_windows, "trailing-silence auto-stop");
