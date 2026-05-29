@@ -17,6 +17,7 @@ use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
 
 use crate::config::{self, Config};
+use crate::display::{self, Backend, DisplayServer};
 
 #[derive(clap::Args, Debug)]
 pub struct SetupArgs {
@@ -60,7 +61,7 @@ enum SetupStep {
 pub fn run(cfg: &Config, args: SetupArgs) -> ExitCode {
     let result = match args.step {
         Some(SetupStep::Doctor) => {
-            doctor();
+            doctor(cfg);
             Ok(())
         }
         Some(SetupStep::Whisper) => build_whisper(cfg),
@@ -85,7 +86,7 @@ pub fn run(cfg: &Config, args: SetupArgs) -> ExitCode {
 
 /// The full bootstrap, in dependency order.
 fn full(cfg: &Config, args: &SetupArgs) -> Result<(), String> {
-    doctor();
+    doctor(cfg);
     build_whisper(cfg)?;
     download_model(cfg)?;
     if args.no_ydotool {
@@ -100,30 +101,56 @@ fn full(cfg: &Config, args: &SetupArgs) -> Result<(), String> {
         install_ydotoold()?;
         install_systemd()?;
     }
-    // Install the pill on request, or automatically when Quickshell is present —
-    // no point shipping the module to a machine that can't render it.
-    if args.quickshell || have("quickshell") {
+    // The Quickshell pill needs wlr-layer-shell, which X11 doesn't provide — skip
+    // it there and rely on desktop notifications (ui.notify) instead.
+    let server = display::resolve_from_env(Backend::parse(&cfg.injection.backend))
+        .unwrap_or(DisplayServer::Wayland);
+    if server == DisplayServer::X11 {
+        println!(
+            "\n==> Quickshell pill: skipped on X11 (layer-shell only); \
+             desktop notifications are used instead (ui.notify)"
+        );
+    } else if args.quickshell || have("quickshell") {
+        // Install the pill on request, or automatically when Quickshell is present —
+        // no point shipping the module to a machine that can't render it.
         install_quickshell(!args.no_pill)?;
     }
     verify(cfg);
-    print_next_steps();
+    print_next_steps(server);
     Ok(())
 }
 
 // --- doctor -----------------------------------------------------------------
 
-fn doctor() {
+fn doctor(cfg: &Config) {
     println!("==> doctor: checking tools");
+
+    // Resolve the display server the same way the daemon does at startup, so the
+    // tool list matches what dictation will actually drive.
+    let server =
+        display::resolve_from_env(Backend::parse(&cfg.injection.backend)).unwrap_or_else(|| {
+            println!("  (could not detect display server; assuming Wayland)");
+            DisplayServer::Wayland
+        });
+    println!("  display server: {}", server_label(server));
+
     println!("  runtime:");
-    for (cmd, note) in [
-        ("pw-record", "PipeWire audio capture"),
-        ("wl-copy", "clipboard write (wl-clipboard)"),
-        ("wl-paste", "clipboard read (wl-clipboard)"),
-        ("ydotool", "keystroke injection"),
-        ("notify-send", "error notifications (libnotify)"),
-    ] {
+    for (cmd, note) in required_tools(server, &cfg.injection.mode) {
         report(cmd, note, have(cmd));
     }
+
+    // The graphical pill is layer-shell only (Hyprland/KDE/Sway). On X11 we fall
+    // back to desktop notifications, so flag that here instead of implying a gap.
+    match server {
+        DisplayServer::Wayland => {
+            println!("  pill overlay: Quickshell (layer-shell); install with `setup --quickshell`")
+        }
+        DisplayServer::X11 => println!(
+            "  pill overlay: layer-shell only — not available on X11; \
+             desktop notifications are used instead (see ui.notify)"
+        ),
+    }
+
     println!("  build (needed for `setup whisper`):");
     for (cmd, note) in [
         ("git", "clone whisper.cpp"),
@@ -149,6 +176,48 @@ fn doctor() {
 fn report(name: &str, note: &str, ok: bool) {
     let mark = if ok { "✓" } else { "✗" };
     println!("    [{mark}] {name:<12} {note}");
+}
+
+/// A human label for the resolved display server.
+fn server_label(server: DisplayServer) -> &'static str {
+    match server {
+        DisplayServer::Wayland => "Wayland",
+        DisplayServer::X11 => "X11",
+    }
+}
+
+/// The runtime tools dictation needs for `server` and injection `mode`, as
+/// `(command, note)` pairs. Pure (no PATH probing) so `doctor` and
+/// `main::warn_missing_tools` can share one source of truth and stay in sync.
+///
+/// - Always: `pw-record` (capture), `ydotool` (paste keystroke, both servers),
+///   `notify-send` (error/status notifications).
+/// - Wayland: `wl-copy`/`wl-paste` for clipboard, plus `wtype` only in `type` mode.
+/// - X11: a clipboard tool (`xclip` *or* `xsel`) and `xdotool` (typing + window class).
+///
+/// On X11 the clipboard requirement is "either xclip or xsel"; we list `xclip`
+/// (the preferred one) so a single missing-tool warning points at the default.
+pub fn required_tools(server: DisplayServer, mode: &str) -> Vec<(&'static str, &'static str)> {
+    let type_mode = mode.eq_ignore_ascii_case("type");
+    let mut tools: Vec<(&'static str, &'static str)> = vec![
+        ("pw-record", "PipeWire audio capture"),
+        ("ydotool", "paste keystroke injection (both servers)"),
+        ("notify-send", "error/status notifications (libnotify)"),
+    ];
+    match server {
+        DisplayServer::Wayland => {
+            tools.push(("wl-copy", "clipboard write (wl-clipboard)"));
+            tools.push(("wl-paste", "clipboard read (wl-clipboard)"));
+            if type_mode {
+                tools.push(("wtype", "direct typing (injection.mode = type)"));
+            }
+        }
+        DisplayServer::X11 => {
+            tools.push(("xclip", "clipboard (xclip preferred, or install xsel)"));
+            tools.push(("xdotool", "typing + active-window class"));
+        }
+    }
+    tools
 }
 
 // --- whisper.cpp ------------------------------------------------------------
@@ -722,15 +791,47 @@ fn has_lib(needle: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn print_next_steps() {
+fn print_next_steps(server: DisplayServer) {
+    println!("\n==> done. Add push-to-talk keybinds:");
+    match server {
+        DisplayServer::Wayland => print_wayland_keybinds(),
+        DisplayServer::X11 => print_x11_keybinds(),
+    }
+    println!("\nThen check it: whispy-client ping");
+}
+
+/// Hyprland (and other layer-shell compositors) keybind hints.
+fn print_wayland_keybinds() {
     println!(
-        "\n==> done. Add Hyprland keybinds (push-to-talk):\n\
+        "\n  Hyprland (~/.config/hypr/hyprland.conf), press-and-hold:\n\
          \n\
          bindd = SUPER, Space, Start dictation, exec, whispy-client start\n\
          bindr = SUPER, Space, Stop dictation,  exec, whispy-client stop\n\
          bind  = SUPER SHIFT, Space, Cancel,    exec, whispy-client cancel\n\
          \n\
-         Then check it: whispy-client ping"
+         Other compositors (Sway, etc.) can bind the same three commands, or use\n\
+         a single toggle: `whispy-client toggle`."
+    );
+}
+
+/// X11 (sxhkd / xbindkeys) and GNOME custom-shortcut keybind hints.
+fn print_x11_keybinds() {
+    println!(
+        "\n  sxhkd (~/.config/sxhkd/sxhkdrc), toggle on a single key:\n\
+         \n\
+         super + space\n\
+             whispy-client toggle\n\
+         \n\
+         xbindkeys (~/.xbindkeysrc):\n\
+         \n\
+         \"whispy-client toggle\"\n\
+             super + space\n\
+         \n\
+         GNOME (Settings > Keyboard > Custom Shortcuts): add a shortcut with\n\
+         command `whispy-client toggle` bound to Super+Space.\n\
+         \n\
+         (Press-and-hold start/stop needs a binder that fires on key release, e.g.\n\
+         Hyprland's `bindr`; sxhkd/xbindkeys/GNOME fire on press, so use `toggle`.)"
     );
 }
 
@@ -755,6 +856,55 @@ mod tests {
         assert!(unit.contains("ExecStart=ydotoold"), "{unit}");
         assert!(unit.contains("[Install]"), "{unit}");
         assert!(unit.contains("WantedBy=graphical-session.target"), "{unit}");
+    }
+
+    /// The command names from `required_tools`, for set-membership assertions.
+    fn tool_names(server: DisplayServer, mode: &str) -> Vec<&'static str> {
+        required_tools(server, mode)
+            .into_iter()
+            .map(|(cmd, _)| cmd)
+            .collect()
+    }
+
+    #[test]
+    fn required_tools_always_includes_capture_paste_notify() {
+        for server in [DisplayServer::Wayland, DisplayServer::X11] {
+            for mode in ["paste", "type"] {
+                let names = tool_names(server, mode);
+                for always in ["pw-record", "ydotool", "notify-send"] {
+                    assert!(
+                        names.contains(&always),
+                        "{always} missing for {server:?}/{mode}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn required_tools_wayland_lists_wl_clipboard_and_wtype_only_in_type_mode() {
+        let paste = tool_names(DisplayServer::Wayland, "paste");
+        assert!(paste.contains(&"wl-copy"));
+        assert!(paste.contains(&"wl-paste"));
+        assert!(!paste.contains(&"wtype"), "paste mode needs no wtype");
+
+        let typed = tool_names(DisplayServer::Wayland, "type");
+        assert!(typed.contains(&"wtype"), "type mode needs wtype");
+        // No X11 tools leak into the Wayland list.
+        assert!(!typed.contains(&"xdotool"));
+        assert!(!typed.contains(&"xclip"));
+    }
+
+    #[test]
+    fn required_tools_x11_lists_clipboard_and_xdotool_in_both_modes() {
+        for mode in ["paste", "type"] {
+            let names = tool_names(DisplayServer::X11, mode);
+            assert!(names.contains(&"xclip"), "x11 clipboard for {mode}");
+            assert!(names.contains(&"xdotool"), "x11 typing/class for {mode}");
+            // No Wayland tools leak into the X11 list.
+            assert!(!names.contains(&"wl-copy"));
+            assert!(!names.contains(&"wtype"));
+        }
     }
 
     #[test]

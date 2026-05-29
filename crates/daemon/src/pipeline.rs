@@ -6,6 +6,8 @@ use std::process::Command;
 use tracing::{info, warn};
 
 use crate::config::{Config, Workflow};
+use crate::display::DisplayServer;
+use crate::inject::InjectBackend;
 
 /// Context for one transcript: which workflow was requested and the focused window.
 #[derive(Debug, Clone, Default)]
@@ -18,9 +20,16 @@ pub struct AppContext {
 
 /// Run the accepted transcript through corrections, snippets, then the selected
 /// workflow's LLM transform. Never fails: LLM errors fall back to the input text.
-pub fn process(text: String, cfg: &Config, ctx: &AppContext) -> String {
+///
+/// `backend` resolves the `{{CLIPBOARD}}` snippet placeholder (Wayland/X11).
+pub fn process(
+    text: String,
+    cfg: &Config,
+    ctx: &AppContext,
+    backend: &dyn InjectBackend,
+) -> String {
     let text = apply_corrections(&text, &cfg.dictionary.corrections);
-    let text = apply_snippets(&text, &cfg.snippets.entries);
+    let text = apply_snippets(&text, &cfg.snippets.entries, backend);
 
     match select_workflow(cfg, ctx) {
         Some(wf) if !wf.prompt.trim().is_empty() => {
@@ -81,7 +90,11 @@ fn apply_corrections(text: &str, corrections: &BTreeMap<String, String>) -> Stri
 
 /// Expand text-expansion snippets. Longer triggers are applied first so they win
 /// over shorter overlapping ones; placeholders in replacements are resolved live.
-fn apply_snippets(text: &str, entries: &BTreeMap<String, String>) -> String {
+fn apply_snippets(
+    text: &str,
+    entries: &BTreeMap<String, String>,
+    backend: &dyn InjectBackend,
+) -> String {
     if entries.is_empty() {
         return text.to_string();
     }
@@ -90,7 +103,7 @@ fn apply_snippets(text: &str, entries: &BTreeMap<String, String>) -> String {
 
     let mut acc = text.to_string();
     for (trigger, replacement) in sorted {
-        let resolved = resolve_placeholders(replacement);
+        let resolved = resolve_placeholders(replacement, backend);
         acc = replace_phrase_ci(&acc, trigger, &resolved);
     }
     acc
@@ -139,7 +152,8 @@ fn boundary_ok(chars: &[char], start: usize, len: usize) -> bool {
 }
 
 /// Substitute `{{DATE}}`, `{{TIME}}`, and `{{CLIPBOARD}}` placeholders in a snippet.
-fn resolve_placeholders(s: &str) -> String {
+/// The clipboard read is dispatched through the active injection `backend`.
+fn resolve_placeholders(s: &str, backend: &dyn InjectBackend) -> String {
     let mut out = s.to_string();
     if out.contains("{{DATE}}") {
         out = out.replace("{{DATE}}", &shell_date("+%Y-%m-%d"));
@@ -148,7 +162,7 @@ fn resolve_placeholders(s: &str) -> String {
         out = out.replace("{{TIME}}", &shell_date("+%H:%M"));
     }
     if out.contains("{{CLIPBOARD}}") {
-        out = out.replace("{{CLIPBOARD}}", &read_clipboard());
+        out = out.replace("{{CLIPBOARD}}", &backend.read_clipboard_text());
     }
     out
 }
@@ -161,18 +175,25 @@ fn shell_date(fmt: &str) -> String {
     }
 }
 
-/// Read the Wayland clipboard via `wl-paste`; empty string on any failure.
+/// Best-effort: the focused window's class, dispatched by display server.
 ///
-/// The result is intentionally not trimmed: clipboard whitespace may be meaningful.
-fn read_clipboard() -> String {
-    match Command::new("wl-paste").arg("--no-newline").output() {
-        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),
-        _ => String::new(),
+/// - Wayland → `hyprctl activewindow -j` (Hyprland), falling back to `swaymsg`
+///   (Sway / wlroots i3-compatible). Other Wayland compositors (GNOME/KDE) expose
+///   no universal protocol, so this returns `None` there.
+/// - X11 → `xdotool getactivewindow getwindowclassname`.
+///
+/// Always `Option<String>`, never panics: app-based workflow auto-selection
+/// degrades silently when the class can't be read (an explicit `--workflow` still
+/// works).
+pub fn active_window_class(server: DisplayServer) -> Option<String> {
+    match server {
+        DisplayServer::Wayland => hyprctl_class().or_else(swaymsg_class),
+        DisplayServer::X11 => xdotool_class(),
     }
 }
 
-/// Best-effort: the focused window's class via `hyprctl activewindow -j`.
-pub fn active_window_class() -> Option<String> {
+/// Hyprland: focused window class via `hyprctl activewindow -j`.
+fn hyprctl_class() -> Option<String> {
     let out = Command::new("hyprctl")
         .args(["activewindow", "-j"])
         .output()
@@ -181,7 +202,64 @@ pub fn active_window_class() -> Option<String> {
         return None;
     }
     let v = serde_json::from_slice::<serde_json::Value>(&out.stdout).ok()?;
-    let s = v.get("class")?.as_str()?;
+    non_empty(v.get("class")?.as_str()?)
+}
+
+/// Sway / wlroots: focused node's `app_id` (Wayland-native) or
+/// `window_properties.class` (XWayland) from `swaymsg -t get_tree`.
+fn swaymsg_class() -> Option<String> {
+    let out = Command::new("swaymsg")
+        .args(["-t", "get_tree"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let tree = serde_json::from_slice::<serde_json::Value>(&out.stdout).ok()?;
+    let node = focused_node(&tree)?;
+    let class = node
+        .get("app_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            node.get("window_properties")
+                .and_then(|wp| wp.get("class"))
+                .and_then(|v| v.as_str())
+        })?;
+    non_empty(class)
+}
+
+/// Depth-first search for the `focused: true` node in a sway tree.
+fn focused_node(node: &serde_json::Value) -> Option<&serde_json::Value> {
+    if node.get("focused").and_then(|v| v.as_bool()) == Some(true) {
+        return Some(node);
+    }
+    for key in ["nodes", "floating_nodes"] {
+        if let Some(children) = node.get(key).and_then(|v| v.as_array()) {
+            for child in children {
+                if let Some(found) = focused_node(child) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// X11: focused window class via `xdotool getactivewindow getwindowclassname`.
+fn xdotool_class() -> Option<String> {
+    let out = Command::new("xdotool")
+        .args(["getactivewindow", "getwindowclassname"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    non_empty(String::from_utf8_lossy(&out.stdout).trim())
+}
+
+/// `Some(s)` for a non-empty string, `None` otherwise.
+fn non_empty(s: &str) -> Option<String> {
     if s.is_empty() {
         None
     } else {
@@ -192,6 +270,41 @@ pub fn active_window_class() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stub backend for snippet tests: a fixed clipboard, no real subprocesses.
+    struct StubBackend {
+        clipboard: String,
+    }
+
+    impl InjectBackend for StubBackend {
+        fn name(&self) -> &'static str {
+            "stub"
+        }
+        fn type_text(&self, _text: &str) -> Result<(), crate::inject::InjectError> {
+            Ok(())
+        }
+        fn top_mime_type(&self) -> Option<String> {
+            None
+        }
+        fn read_clipboard(&self, _mime: &str) -> Result<Vec<u8>, String> {
+            Ok(self.clipboard.as_bytes().to_vec())
+        }
+        fn copy_clipboard(&self, _mime: Option<&str>, _bytes: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn clear_clipboard(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn read_clipboard_text(&self) -> String {
+            self.clipboard.clone()
+        }
+    }
+
+    fn stub(clipboard: &str) -> StubBackend {
+        StubBackend {
+            clipboard: clipboard.to_string(),
+        }
+    }
 
     #[test]
     fn replace_phrase_ci_is_case_insensitive_and_whole_word() {
@@ -240,7 +353,19 @@ mod tests {
         let mut entries = BTreeMap::new();
         entries.insert("brb".to_string(), "be right back".to_string());
 
-        assert_eq!(apply_snippets("brb", &entries), "be right back");
+        assert_eq!(apply_snippets("brb", &entries, &stub("")), "be right back");
+    }
+
+    #[test]
+    fn apply_snippets_resolves_clipboard_placeholder_via_backend() {
+        let mut entries = BTreeMap::new();
+        entries.insert("paste".to_string(), "<{{CLIPBOARD}}>".to_string());
+
+        // The placeholder is filled from the backend; whitespace is preserved (no trim).
+        assert_eq!(
+            apply_snippets("paste", &entries, &stub("  hi  ")),
+            "<  hi  >"
+        );
     }
 
     #[test]
@@ -253,11 +378,43 @@ mod tests {
         // BTreeMap iterates "my email" before "my email address"; sorting by length
         // descending ensures the longer trigger is consumed first.
         assert_eq!(
-            apply_snippets("send my email address", &entries),
+            apply_snippets("send my email address", &entries, &stub("")),
             "send LONG"
         );
         // The shorter trigger still works when the longer one cannot match.
-        assert_eq!(apply_snippets("send my email", &entries), "send SHORT");
+        assert_eq!(
+            apply_snippets("send my email", &entries, &stub("")),
+            "send SHORT"
+        );
+    }
+
+    #[test]
+    fn focused_node_finds_focused_app_id_in_sway_tree() {
+        let tree = serde_json::json!({
+            "focused": false,
+            "nodes": [
+                {
+                    "focused": false,
+                    "nodes": [
+                        { "focused": true, "app_id": "firefox" }
+                    ],
+                    "floating_nodes": []
+                }
+            ],
+            "floating_nodes": []
+        });
+        let node = focused_node(&tree).expect("a focused node exists");
+        assert_eq!(node.get("app_id").and_then(|v| v.as_str()), Some("firefox"));
+    }
+
+    #[test]
+    fn focused_node_returns_none_when_nothing_focused() {
+        let tree = serde_json::json!({
+            "focused": false,
+            "nodes": [{ "focused": false, "nodes": [], "floating_nodes": [] }],
+            "floating_nodes": []
+        });
+        assert!(focused_node(&tree).is_none());
     }
 
     #[test]

@@ -126,7 +126,7 @@ fn run(cfg: Config) -> std::io::Result<()> {
 
     // Surface missing injection/capture tools up front (warn-only: injection errors
     // already guide the user, but this points at the fix before the first dictation).
-    warn_missing_tools(&cfg);
+    warn_missing_tools(&cfg, server);
 
     // Install SIGTERM/SIGINT handlers that flip a flag; the accept loop polls it.
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -199,7 +199,7 @@ fn run(cfg: Config) -> std::io::Result<()> {
     let socket_path = cfg.ipc.socket_path();
 
     status.idle();
-    let app = Arc::new(App::new(cfg, status, stt, blacklist));
+    let app = Arc::new(App::new(cfg, status, stt, blacklist, server));
 
     // Serve until SIGTERM/SIGINT.
     let result = server::serve(&socket_path, app, Arc::clone(&shutdown));
@@ -210,16 +210,19 @@ fn run(cfg: Config) -> std::io::Result<()> {
     result
 }
 
-/// Warn (don't fail) if the binaries the configured injection mode needs are not
-/// on `PATH`. The same checks back `whispy-daemon setup doctor`.
-fn warn_missing_tools(cfg: &Config) {
-    let mut needed = vec!["pw-record"];
-    if cfg.injection.mode == "type" {
-        needed.push("wtype");
-    } else {
-        needed.extend(["wl-copy", "wl-paste", "ydotool"]);
-    }
-    for tool in needed {
+/// Warn (don't fail) if the binaries the configured injection backend + mode need
+/// are not on `PATH`. Shares the tool list with `whispy-daemon setup doctor` via
+/// [`setup::required_tools`] so the two never drift.
+///
+/// On X11 the clipboard requirement is "xclip *or* xsel"; `required_tools` lists
+/// `xclip`, so an installed `xsel` would still warn here. That's intentionally
+/// conservative — the warning names the preferred tool and doctor explains the
+/// fallback; injection itself uses whichever is present.
+fn warn_missing_tools(cfg: &Config, server: DisplayServer) {
+    for (tool, _note) in setup::required_tools(server, &cfg.injection.mode) {
+        if tool == "xclip" && setup::have("xsel") {
+            continue; // xsel is an accepted fallback for the X11 clipboard.
+        }
         if !setup::have(tool) {
             warn!(
                 tool,

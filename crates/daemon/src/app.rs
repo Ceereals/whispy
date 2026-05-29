@@ -12,6 +12,7 @@ use whispy_common::{Cmd, Resp};
 
 use crate::audio::{Capture, Recorder};
 use crate::config::{self, Config};
+use crate::display::DisplayServer;
 use crate::filter::{self, Decision, Hallucinations, Metrics};
 use crate::inject::Injector;
 use crate::pipeline::{self, AppContext};
@@ -33,14 +34,22 @@ pub struct App {
     stt: Arc<SttClient>,
     blacklist: Arc<Hallucinations>,
     injector: Injector,
+    /// Resolved display server: drives window-class detection and notify gating.
+    server: DisplayServer,
     capture: Mutex<Option<Capture>>,
     start_ctx: Mutex<Option<StartCtx>>,
 }
 
 impl App {
-    pub fn new(cfg: Config, status: Status, stt: SttClient, blacklist: Hallucinations) -> Self {
+    pub fn new(
+        cfg: Config,
+        status: Status,
+        stt: SttClient,
+        blacklist: Hallucinations,
+        server: DisplayServer,
+    ) -> Self {
         let recorder = Recorder::new(cfg.audio.clone());
-        let injector = Injector::new(&cfg.injection);
+        let injector = Injector::new(&cfg.injection, server);
         Self {
             cfg,
             status,
@@ -48,6 +57,7 @@ impl App {
             stt: Arc::new(stt),
             blacklist: Arc::new(blacklist),
             injector,
+            server,
             capture: Mutex::new(None),
             start_ctx: Mutex::new(None),
         }
@@ -83,10 +93,13 @@ impl App {
         let on_rms = move |rms: f32| rms_status.recording(rms);
 
         let too_long_status = self.status.clone();
+        let too_long_notify = should_notify(&self.cfg.ui.notify, self.server);
         let on_too_long = move || {
             warn!("clip exceeded max duration");
             too_long_status.error("too_long", "clip exceeded the maximum duration");
-            notify("Dictation too long", "Clip exceeded the maximum duration.");
+            if too_long_notify {
+                notify("Dictation too long", "Clip exceeded the maximum duration.");
+            }
         };
 
         // Trailing silence finalizes the clip just like an explicit stop. The
@@ -106,7 +119,7 @@ impl App {
                 // the transcript will be post-processed for and pasted into.
                 *self.start_ctx.lock().expect("start_ctx lock") = Some(StartCtx {
                     workflow,
-                    window_class: pipeline::active_window_class(),
+                    window_class: pipeline::active_window_class(self.server),
                 });
                 info!("recording started");
                 Resp::ok()
@@ -175,7 +188,7 @@ impl App {
             Err(e) => {
                 warn!(error = %e, "transcription failed");
                 self.status.error("stt_error", &e.to_string());
-                notify("Dictation failed", &e.to_string());
+                self.notify("Dictation failed", &e.to_string());
                 return;
             }
         };
@@ -213,14 +226,14 @@ impl App {
                         })
                         .unwrap_or_default()
                 };
-                let text = pipeline::process(text, &self.cfg, &ctx);
+                let text = pipeline::process(text, &self.cfg, &ctx, self.injector.backend());
                 info!(chars = text.len(), lang = ?transcription.language, "transcript accepted");
                 match self.injector.inject(&text) {
                     Ok(()) => self.status.success(),
                     Err(e) => {
                         warn!(error = %e, "injection failed");
                         self.status.error("inject_error", &e.to_string());
-                        notify("Dictation paste failed", &e.to_string());
+                        self.notify("Dictation paste failed", &e.to_string());
                     }
                 }
             }
@@ -230,6 +243,32 @@ impl App {
                     .error(reason.kind(), "transcript rejected by filter");
             }
         }
+    }
+
+    /// Best-effort desktop notification, gated by `ui.notify` and the display
+    /// server (see [`should_notify`]). A no-op when notifications are disabled for
+    /// this session; `state.json` is still published unconditionally.
+    fn notify(&self, summary: &str, body: &str) {
+        if should_notify(&self.cfg.ui.notify, self.server) {
+            notify(summary, body);
+        }
+    }
+}
+
+/// Decide whether to fire a desktop notification for a transient state transition.
+///
+/// - `"off"` — never.
+/// - `"on"` — always.
+/// - `"auto"` (default) — only on non-layer-shell sessions (X11), where the
+///   Quickshell pill can't run; Wayland users see the pill instead.
+///
+/// Unknown values (rejected by `Config::validate` before we get here) behave as
+/// `"auto"` defensively.
+fn should_notify(mode: &str, server: DisplayServer) -> bool {
+    match mode {
+        "off" => false,
+        "on" => true,
+        _ => server == DisplayServer::X11,
     }
 }
 
@@ -266,4 +305,32 @@ fn notify(summary: &str, body: &str) {
         .arg(summary)
         .arg(body)
         .status();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notify_off_never_fires() {
+        assert!(!should_notify("off", DisplayServer::X11));
+        assert!(!should_notify("off", DisplayServer::Wayland));
+    }
+
+    #[test]
+    fn notify_on_always_fires() {
+        assert!(should_notify("on", DisplayServer::X11));
+        assert!(should_notify("on", DisplayServer::Wayland));
+    }
+
+    #[test]
+    fn notify_auto_fires_only_on_x11() {
+        // X11 has no layer-shell pill, so the notification is the only UI there.
+        assert!(should_notify("auto", DisplayServer::X11));
+        // Wayland gets the Quickshell pill, so auto stays quiet to avoid double-serving.
+        assert!(!should_notify("auto", DisplayServer::Wayland));
+        // Unknown values (validated away) behave as auto.
+        assert!(should_notify("bogus", DisplayServer::X11));
+        assert!(!should_notify("bogus", DisplayServer::Wayland));
+    }
 }
