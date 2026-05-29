@@ -9,9 +9,12 @@
 //! detected and skipped — so it is safe to re-run.
 
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
+use std::time::Duration;
 
 use crate::config::{self, Config};
 
@@ -29,6 +32,10 @@ pub struct SetupArgs {
     /// Don't install or enable the systemd user service.
     #[arg(long)]
     no_systemd: bool,
+    /// Install the pill module but don't run it as a standalone service (use when
+    /// you embed `PillPanel {}` in your own Quickshell shell instead).
+    #[arg(long)]
+    no_pill: bool,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -45,6 +52,8 @@ enum SetupStep {
     Systemd,
     /// Install the Quickshell pill module.
     Quickshell,
+    /// Check that the installed system is actually ready to dictate.
+    Verify,
 }
 
 /// Entry point dispatched from `main` when the `setup` subcommand is given.
@@ -58,7 +67,11 @@ pub fn run(cfg: &Config, args: SetupArgs) -> ExitCode {
         Some(SetupStep::Model) => download_model(cfg),
         Some(SetupStep::Ydotool) => setup_ydotool(),
         Some(SetupStep::Systemd) => install_config(cfg).and_then(|()| install_systemd()),
-        Some(SetupStep::Quickshell) => install_quickshell(),
+        Some(SetupStep::Quickshell) => install_quickshell(!args.no_pill),
+        Some(SetupStep::Verify) => {
+            verify(cfg);
+            Ok(())
+        }
         None => full(cfg, &args),
     };
     match result {
@@ -84,11 +97,15 @@ fn full(cfg: &Config, args: &SetupArgs) -> Result<(), String> {
     if args.no_systemd {
         println!("\n==> systemd: skipped (--no-systemd)");
     } else {
+        install_ydotoold()?;
         install_systemd()?;
     }
-    if args.quickshell {
-        install_quickshell()?;
+    // Install the pill on request, or automatically when Quickshell is present —
+    // no point shipping the module to a machine that can't render it.
+    if args.quickshell || have("quickshell") {
+        install_quickshell(!args.no_pill)?;
     }
+    verify(cfg);
     print_next_steps();
     Ok(())
 }
@@ -308,9 +325,67 @@ fn setup_ydotool() -> Result<(), String> {
     )?;
     exec(Command::new("sudo").args(["udevadm", "control", "--reload-rules"]))?;
     exec(Command::new("sudo").args(["udevadm", "trigger"]))?;
-    println!("  done. Log out/in for the 'input' group, then start the ydotool daemon:");
-    println!("    systemctl --user enable --now ydotool   # if your package ships a unit");
+    println!("  done. Log out/in (or run `newgrp input`) for the 'input' group to apply.");
     Ok(())
+}
+
+/// Install and enable a `ydotoold` systemd user unit so paste-mode injection works
+/// without a manual step. `ydotoold` owns the uinput socket the daemon's
+/// `ydotool key` calls talk to; without it running, paste silently no-ops.
+fn install_ydotoold() -> Result<(), String> {
+    println!("\n==> ydotoold user service");
+    if !have("ydotool") {
+        println!("  note: ydotool is not installed yet — install it, then re-run `setup`.");
+        return Ok(());
+    }
+
+    // If systemd already knows a ydotoold unit (e.g. a packaged /usr unit), keep it.
+    let known = Command::new("systemctl")
+        .args(["--user", "cat", "ydotoold.service"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if !known {
+        let dir = config::expand("~/.config/systemd/user");
+        fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let unit = dir.join("ydotoold.service");
+        fs::write(&unit, ydotoold_unit_contents())
+            .map_err(|e| format!("{}: {e}", unit.display()))?;
+        println!("  wrote {}", unit.display());
+        exec(Command::new("systemctl").args(["--user", "daemon-reload"]))?;
+    } else {
+        println!("  using the ydotoold unit already known to systemd");
+    }
+
+    // Best-effort: a headless/SSH session may have no user manager.
+    if exec(Command::new("systemctl").args(["--user", "enable", "--now", "ydotoold.service"]))
+        .is_err()
+    {
+        println!("  could not enable ydotoold now — start it from your session with:");
+        println!("    systemctl --user enable --now ydotoold");
+    } else {
+        println!("  enabled and started ydotoold");
+    }
+    Ok(())
+}
+
+fn ydotoold_unit_contents() -> &'static str {
+    "[Unit]\n\
+     Description=ydotoold (uinput daemon for whispy paste injection)\n\
+     Documentation=https://github.com/Ceereals/whispy\n\
+     PartOf=graphical-session.target\n\
+     \n\
+     [Service]\n\
+     Type=simple\n\
+     ExecStart=ydotoold\n\
+     Restart=on-failure\n\
+     RestartSec=2\n\
+     \n\
+     [Install]\n\
+     WantedBy=graphical-session.target\n"
 }
 
 // --- config + systemd -------------------------------------------------------
@@ -383,7 +458,8 @@ fn unit_contents(exe: &Path) -> String {
         "[Unit]\n\
          Description=whispy dictation daemon\n\
          Documentation=https://github.com/Ceereals/whispy\n\
-         After=pipewire.service\n\
+         After=pipewire.service ydotoold.service\n\
+         Wants=ydotoold.service\n\
          PartOf=graphical-session.target\n\
          \n\
          [Service]\n\
@@ -400,7 +476,7 @@ fn unit_contents(exe: &Path) -> String {
 
 // --- quickshell -------------------------------------------------------------
 
-fn install_quickshell() -> Result<(), String> {
+fn install_quickshell(run_service: bool) -> Result<(), String> {
     println!("\n==> Quickshell pill module");
     let src =
         quickshell_source().ok_or("could not find the Quickshell module source (ui/quickshell)")?;
@@ -411,9 +487,74 @@ fn install_quickshell() -> Result<(), String> {
         let to = dest.join(name);
         fs::copy(&from, &to).map_err(|e| format!("{} -> {}: {e}", from.display(), to.display()))?;
     }
-    println!("  installed to {}", dest.display());
-    println!("  add `import Whispy` + `PillPanel {{}}` to your shell.qml");
+    println!("  installed module to {}", dest.display());
+
+    // Seed the standalone shell config (never clobber user edits) so the pill can
+    // run as its own Quickshell instance with no change to the user's main shell.qml.
+    let shell = config::expand("~/.config/quickshell/whispy/shell.qml");
+    seed(
+        &shell,
+        &fs::read_to_string(src.join("shell.qml"))
+            .map_err(|e| format!("{}: {e}", src.join("shell.qml").display()))?,
+    )?;
+
+    if run_service {
+        install_pill_service()?;
+    } else {
+        println!("  --no-pill: skipped the standalone pill service");
+        println!("  embed it yourself: `import Whispy` + `PillPanel {{}}` in your shell.qml");
+    }
     Ok(())
+}
+
+/// Install and enable the standalone pill service (`quickshell -c whispy`), so the
+/// overlay runs without the user editing their own Quickshell shell.
+fn install_pill_service() -> Result<(), String> {
+    let known = Command::new("systemctl")
+        .args(["--user", "cat", "whispy-pill.service"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if !known {
+        let dir = config::expand("~/.config/systemd/user");
+        fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let unit = dir.join("whispy-pill.service");
+        fs::write(&unit, pill_unit_contents()).map_err(|e| format!("{}: {e}", unit.display()))?;
+        println!("  wrote {}", unit.display());
+        exec(Command::new("systemctl").args(["--user", "daemon-reload"]))?;
+    } else {
+        println!("  using the whispy-pill unit already known to systemd");
+    }
+
+    if exec(Command::new("systemctl").args(["--user", "enable", "--now", "whispy-pill.service"]))
+        .is_err()
+    {
+        println!("  could not enable the pill now — start it from your session with:");
+        println!("    systemctl --user enable --now whispy-pill");
+    } else {
+        println!("  enabled and started whispy-pill");
+    }
+    Ok(())
+}
+
+fn pill_unit_contents() -> &'static str {
+    "[Unit]\n\
+     Description=whispy dictation pill (standalone Quickshell overlay)\n\
+     Documentation=https://github.com/Ceereals/whispy\n\
+     After=graphical-session.target\n\
+     PartOf=graphical-session.target\n\
+     \n\
+     [Service]\n\
+     Type=simple\n\
+     ExecStart=quickshell -c whispy\n\
+     Restart=on-failure\n\
+     RestartSec=2\n\
+     \n\
+     [Install]\n\
+     WantedBy=graphical-session.target\n"
 }
 
 /// Locate the bundled Quickshell QML sources across install layouts.
@@ -430,6 +571,88 @@ fn quickshell_source() -> Option<PathBuf> {
         candidates.push(prefix.join("share/whispy/quickshell"));
     }
     candidates.into_iter().find(|p| p.join("qmldir").exists())
+}
+
+// --- verify -----------------------------------------------------------------
+
+/// Check the *running* system, not just tools on PATH: are the model and binary in
+/// place, is the daemon answering, is ydotoold up, is whisper-server listening?
+/// Prints a ✓/✗ table so the user knows whether setup actually worked.
+fn verify(cfg: &Config) {
+    println!("\n==> verify");
+
+    report(
+        "model",
+        &cfg.stt.model_file().display().to_string(),
+        cfg.stt.model_file().exists(),
+    );
+    report(
+        "whisper-server",
+        &cfg.stt.server_bin_path().display().to_string(),
+        cfg.stt.server_bin_path().exists(),
+    );
+
+    let daemon_ok = daemon_responds(cfg);
+    report("daemon", "responds to ping on the IPC socket", daemon_ok);
+
+    // ydotoold only matters for paste mode; note it but don't imply failure in type mode.
+    let paste_mode = cfg.injection.mode == "paste";
+    if paste_mode {
+        report(
+            "ydotoold",
+            "active (needed for paste-mode injection)",
+            ydotoold_active(),
+        );
+    } else {
+        println!(
+            "    [-] {:<12} not needed (injection.mode = \"type\")",
+            "ydotoold"
+        );
+    }
+
+    report(
+        "whisper http",
+        &format!("listening on {}:{}", cfg.stt.host, cfg.stt.port),
+        port_open(&cfg.stt.host, cfg.stt.port),
+    );
+}
+
+/// Connect to the IPC socket and confirm the daemon answers a `ping`.
+fn daemon_responds(cfg: &Config) -> bool {
+    let path = cfg.ipc.socket_path();
+    let Ok(mut stream) = UnixStream::connect(&path) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    if stream.write_all(b"{\"cmd\":\"ping\"}\n").is_err() {
+        return false;
+    }
+    let mut line = String::new();
+    if BufReader::new(&stream).read_line(&mut line).is_err() {
+        return false;
+    }
+    serde_json::from_str::<whispy_common::Resp>(line.trim())
+        .map(|r| r.ok)
+        .unwrap_or(false)
+}
+
+/// Is the `ydotoold` user service active?
+fn ydotoold_active() -> bool {
+    Command::new("systemctl")
+        .args(["--user", "is-active", "--quiet", "ydotoold.service"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Can we open a TCP connection to `host:port` (i.e. whisper-server is listening)?
+fn port_open(host: &str, port: u16) -> bool {
+    use std::net::ToSocketAddrs;
+    let Ok(mut addrs) = (host, port).to_socket_addrs() else {
+        return false;
+    };
+    addrs.any(|addr| TcpStream::connect_timeout(&addr, Duration::from_secs(1)).is_ok())
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -510,6 +733,25 @@ fn print_next_steps() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn whispy_unit_depends_on_ydotoold() {
+        let unit = unit_contents(Path::new("/usr/bin/whispy-daemon"));
+        assert!(unit.contains("Wants=ydotoold.service"), "{unit}");
+        assert!(
+            unit.contains("After=pipewire.service ydotoold.service"),
+            "{unit}"
+        );
+        assert!(unit.contains("ExecStart=/usr/bin/whispy-daemon"), "{unit}");
+    }
+
+    #[test]
+    fn ydotoold_unit_is_a_valid_user_service() {
+        let unit = ydotoold_unit_contents();
+        assert!(unit.contains("ExecStart=ydotoold"), "{unit}");
+        assert!(unit.contains("[Install]"), "{unit}");
+        assert!(unit.contains("WantedBy=graphical-session.target"), "{unit}");
+    }
 
     #[test]
     fn resolve_backend_passes_through_explicit_values() {

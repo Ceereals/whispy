@@ -40,17 +40,19 @@ your focused field. See [`docs/hyprland-setup.md`](docs/hyprland-setup.md) for t
 
 ## Install
 
-**Arch / CachyOS (AUR)** — recommended:
+**Any distro (script)** — one command, nothing to do after. On Arch it routes to the AUR
+package; elsewhere it builds from source into `~/.local/bin`. Either way it then runs
+`whispy-daemon setup` for you (whisper.cpp build, model download, ydotool + services):
+
+```sh
+./install.sh                         # add WHISPY_NO_SETUP=1 to install binaries only
+```
+
+**Arch / CachyOS (AUR):**
 
 ```sh
 paru -S whispy            # or: yay -S whispy
-```
-
-**Any distro (script)** — on Arch it routes to the AUR package; elsewhere it builds from
-source into `~/.local/bin`:
-
-```sh
-./install.sh
+whispy-daemon setup       # finish the one-time bootstrap
 ```
 
 **From source:**
@@ -58,25 +60,32 @@ source into `~/.local/bin`:
 ```sh
 cargo build --release --locked
 install -Dm755 target/release/whispy-{daemon,client} -t ~/.local/bin
+whispy-daemon setup
 ```
 
 ## Setup
 
-Bootstrap the runtime once. This **builds whisper.cpp** (Vulkan or CPU, per `stt.backend` — auto-detected by default), **downloads the model**,
-grants ydotool uinput access, seeds `~/.config/whispy`, and enables the systemd user service:
+`whispy-daemon setup` is the one-time bootstrap (idempotent — safe to re-run). It **builds
+whisper.cpp** (Vulkan or CPU, per `stt.backend` — auto-detected by default), **downloads the
+model**, grants ydotool uinput access, seeds
+`~/.config/whispy`, enables the `whispy-daemon` **and** `ydotoold` user services, and — if
+Quickshell is present — runs the pill as its own `whispy-pill` service (no `shell.qml` edit),
+then **verifies** the running system:
 
 ```sh
-whispy-daemon setup                 # add --quickshell for the pill overlay
+whispy-daemon setup                 # --quickshell forces the pill; --no-pill installs the
+                                    # module but skips the service (embed PillPanel yourself)
 ```
 
 Run any step on its own with:
 
 ```sh
-whispy-daemon setup doctor|whisper|model|ydotool|systemd|quickshell
+whispy-daemon setup doctor|whisper|model|ydotool|systemd|quickshell|verify
 ```
 
-`setup` prints the Hyprland keybinds to add at the end — see
-[`docs/hyprland-setup.md`](docs/hyprland-setup.md).
+The only manual step left is the Hyprland keybinds — `setup` prints them at the end (see
+[`docs/hyprland-setup.md`](docs/hyprland-setup.md)). Re-run `whispy-daemon setup verify` any
+time to check that the model, daemon, `ydotoold`, and whisper-server are all up.
 
 ## How it works
 

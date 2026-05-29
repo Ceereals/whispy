@@ -50,9 +50,14 @@ package() {
   sed -i 's|^ExecStart=.*|ExecStart=/usr/bin/whispy-daemon|' \
     "$pkgdir/usr/lib/systemd/user/whispy-daemon.service"
 
+  install -Dm644 systemd/ydotoold.service \
+    "$pkgdir/usr/lib/systemd/user/ydotoold.service"
+  install -Dm644 systemd/whispy-pill.service \
+    "$pkgdir/usr/lib/systemd/user/whispy-pill.service"
+
   install -Dm644 -t "$pkgdir/usr/share/whispy/quickshell" \
     ui/quickshell/Tokens.qml ui/quickshell/Pill.qml \
-    ui/quickshell/PillPanel.qml ui/quickshell/qmldir
+    ui/quickshell/PillPanel.qml ui/quickshell/qmldir ui/quickshell/shell.qml
 
   install -Dm644 -t "$pkgdir/usr/share/whispy/config" \
     config/default.toml config/hallucinations.toml

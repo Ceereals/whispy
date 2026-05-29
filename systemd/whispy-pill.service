@@ -1,0 +1,14 @@
+[Unit]
+Description=whispy dictation pill (standalone Quickshell overlay)
+Documentation=https://github.com/Ceereals/whispy
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=quickshell -c whispy
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

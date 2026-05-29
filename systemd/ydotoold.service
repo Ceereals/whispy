@@ -1,0 +1,13 @@
+[Unit]
+Description=ydotoold (uinput daemon for whispy paste injection)
+Documentation=https://github.com/Ceereals/whispy
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=ydotoold
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target
