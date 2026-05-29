@@ -5,7 +5,7 @@ End-to-end setup for whispy on Hyprland.
 ## Quick start
 
 After installing the binaries (AUR, `./install.sh`, or `cargo build`), one command
-does everything below — build whisper.cpp (Vulkan), download the model, grant
+does everything below — build whisper.cpp (Vulkan or CPU, per `stt.backend`), download the model, grant
 ydotool access, seed the config, and enable the service:
 
 ```sh
@@ -17,7 +17,7 @@ step for when you want to do it by hand or debug a failure.
 
 ## 1. Prerequisites
 
-- whisper.cpp built with Vulkan and a model downloaded (see `docs/stt-benchmark.md`).
+- whisper.cpp built (Vulkan or CPU, per `stt.backend`) and a model downloaded (see `docs/stt-benchmark.md`).
   Defaults expect `~/.local/share/whisper.cpp/build/bin/whisper-server` and
   `~/.local/share/whisper.cpp/models/ggml-large-v3-turbo-q5_0.bin`.
 - `pw-record` (PipeWire), `wl-clipboard` (`wl-copy`/`wl-paste`), `ydotool`.

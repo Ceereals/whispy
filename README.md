@@ -16,7 +16,7 @@
 
 </div>
 
-Local, fast, Wayland-native dictation: a resident daemon keeps a Vulkan
+Local, fast, Wayland-native dictation: a resident daemon keeps a
 [whisper.cpp](https://github.com/ggerganov/whisper.cpp) model in RAM, a thin client is fired
 from your Hyprland binds, and a [Quickshell](https://quickshell.org) pill shows live state.
 Speech never leaves your machine.
@@ -62,7 +62,7 @@ install -Dm755 target/release/whispy-{daemon,client} -t ~/.local/bin
 
 ## Setup
 
-Bootstrap the runtime once. This **builds whisper.cpp (Vulkan)**, **downloads the model**,
+Bootstrap the runtime once. This **builds whisper.cpp** (Vulkan or CPU, per `stt.backend` — auto-detected by default), **downloads the model**,
 grants ydotool uinput access, seeds `~/.config/whispy`, and enables the systemd user service:
 
 ```sh
@@ -81,7 +81,7 @@ whispy-daemon setup doctor|whisper|model|ydotool|systemd|quickshell
 ## How it works
 
 ```
-Hyprland keybind ──► whispy-client ──(unix socket)──► whispy-daemon ──► whisper-server (Vulkan)
+Hyprland keybind ──► whispy-client ──(unix socket)──► whispy-daemon ──► whisper-server (Vulkan/CPU)
                                                           │
                                                           ├─► state.json ──► Quickshell pill
                                                           └─► inject ──► focused app
@@ -90,7 +90,7 @@ Hyprland keybind ──► whispy-client ──(unix socket)──► whispy-dae
 - **whispy-daemon** — resident service: supervises a `whisper-server` child (model stays
   in RAM), captures audio (PipeWire), filters hallucinations, injects text, publishes state.
 - **whispy-client** — tiny binary called from Hyprland binds (`start` / `stop` / `cancel` / `toggle`).
-- **whisper-server** — whisper.cpp built with the Vulkan backend (runs on AMD RDNA4, no ROCm).
+- **whisper-server** — whisper.cpp built with the backend `stt.backend` picks: Vulkan (developed on AMD RDNA4, no ROCm) or CPU (OpenBLAS-accelerated when available).
 - **pill UI** — Quickshell layer overlay reading the state file ([`ui/quickshell/`](ui/quickshell/)).
 
 **Two injection modes** (`injection.mode`):
@@ -121,12 +121,15 @@ reason, so you can see whether `fuzzy_ratio` / confidence bounds are too aggress
 
 - Hyprland / Wayland, PipeWire (`pw-record`), `wl-clipboard`, `libnotify`
 - `ydotool` (paste mode) and/or `wtype` (type mode)
-- A Vulkan-capable GPU (developed on RX 9070 XT / RDNA4) + `vulkan-icd-loader`
+- For the Vulkan backend: a Vulkan-capable GPU (developed on RX 9070 XT / RDNA4) + `vulkan-icd-loader`. Not needed for the CPU backend.
 - Build tools for `setup whisper`: `git`, `cmake`, a C/C++ compiler
-- Optional: [Quickshell](https://quickshell.org) (Qt 6.5+) for the pill overlay
+- Optional: `openblas` for ~3-4× faster CPU inference; [Quickshell](https://quickshell.org) (Qt 6.5+) for the pill overlay
 
-> **Platform notes.** `setup whisper` builds whisper.cpp with the **Vulkan** backend; NVIDIA
-> (CUDA) or CPU-only users should build whisper.cpp themselves and point `stt.server_bin` at it.
+> **Platform notes.** `setup whisper` builds whisper.cpp with the backend `stt.backend` selects:
+> `auto` (default) builds Vulkan when its loader is present, else a CPU build (OpenBLAS-accelerated
+> when `libopenblas` is installed) — so GPU-less machines work out of the box. Force it with
+> `stt.backend = "vulkan"` or `"cpu"`. NVIDIA (CUDA) users should build whisper.cpp themselves and
+> point `stt.server_bin` at it.
 > AI-workflow auto-selection by focused-window class uses `hyprctl`, so it is **Hyprland-only**
 > (manual `--workflow NAME` still works everywhere; on other compositors the auto-match is skipped).
 

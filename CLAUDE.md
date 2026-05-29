@@ -6,18 +6,21 @@ Guidance for AI assistants working in this repository.
 
 whispy is **push-to-talk dictation for Hyprland (Wayland)**. Hold/toggle a key,
 speak, release — the transcribed text is injected into the focused field. Speech
-never leaves the machine: a resident daemon keeps a Vulkan
+never leaves the machine: a resident daemon keeps a
 [whisper.cpp](https://github.com/ggerganov/whisper.cpp) model in RAM, a thin
 client is fired from Hyprland binds, and a [Quickshell](https://quickshell.org)
 pill overlay shows live state.
 
-Target platform is Linux + Wayland (Hyprland), validated on AMD RDNA4 with the
-Vulkan backend (no ROCm). It is **not** cross-platform.
+Target platform is Linux + Wayland (Hyprland), developed on AMD RDNA4 with the
+Vulkan backend (no ROCm). whisper-server's compute backend is selectable via
+`stt.backend` (`auto` / `vulkan` / `cpu`): `auto` builds Vulkan when its loader is
+present, else a CPU build (OpenBLAS-accelerated when `libopenblas` is installed),
+so GPU-less machines work too. It is **not** cross-platform (Linux/Wayland only).
 
 ## Architecture
 
 ```
-Hyprland keybind ──► whispy-client ──(unix socket)──► whispy-daemon ──► whisper-server (Vulkan)
+Hyprland keybind ──► whispy-client ──(unix socket)──► whispy-daemon ──► whisper-server (Vulkan/CPU)
                                                           │
                                                           ├─► state.json ──► Quickshell pill
                                                           └─► inject ──► focused app
@@ -29,8 +32,9 @@ Hyprland keybind ──► whispy-client ──(unix socket)──► whispy-dae
   text, and publishes state.
 - **whispy-client** — tiny binary called from Hyprland binds. Sends one command and
   exits fast (no async runtime, no config parsing).
-- **whisper-server** — whisper.cpp built with the Vulkan backend. Built and managed
-  per-machine by `whispy-daemon setup`; **not** shipped in releases.
+- **whisper-server** — whisper.cpp built with the backend `stt.backend` selects
+  (Vulkan, or CPU/OpenBLAS). Built and managed per-machine by `whispy-daemon setup`;
+  **not** shipped in releases.
 - **pill UI** — Quickshell layer overlay that reads `state.json` (`ui/quickshell/`).
 
 ### Recording flow

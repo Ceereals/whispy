@@ -1,7 +1,8 @@
 //! `whispy-daemon setup`: one-shot bootstrap for a fresh install.
 //!
 //! Brings the machine from "binaries installed" to "ready to dictate": checks the
-//! runtime/build tools, builds whisper.cpp with the Vulkan backend, downloads the
+//! runtime/build tools, builds whisper.cpp with the configured compute backend
+//! (Vulkan, CPU, or auto-detected — see `stt.backend`), downloads the
 //! ggml model to the path the config expects, grants ydotool uinput access, seeds
 //! the user config, installs+enables the systemd user unit, and (opt-in) drops the
 //! Quickshell pill module in place. Each step is idempotent — already-done work is
@@ -34,7 +35,7 @@ pub struct SetupArgs {
 enum SetupStep {
     /// Check that the required runtime and build tools are present.
     Doctor,
-    /// Clone and build whisper.cpp with the Vulkan backend.
+    /// Clone and build whisper.cpp with the configured `stt.backend`.
     Whisper,
     /// Download the ggml model to the configured path.
     Model,
@@ -115,7 +116,17 @@ fn doctor() {
     ] {
         report(cmd, note, have(cmd));
     }
-    report("libvulkan", "Vulkan loader", has_vulkan());
+    println!("  backend (for `setup whisper`; one of these, per stt.backend):");
+    report(
+        "libvulkan",
+        "Vulkan GPU backend (backend = vulkan/auto)",
+        has_vulkan(),
+    );
+    report(
+        "libopenblas",
+        "faster CPU inference (optional, backend = cpu)",
+        has_lib("libopenblas"),
+    );
 }
 
 fn report(name: &str, note: &str, ok: bool) {
@@ -126,11 +137,24 @@ fn report(name: &str, note: &str, ok: bool) {
 // --- whisper.cpp ------------------------------------------------------------
 
 fn build_whisper(cfg: &Config) -> Result<(), String> {
-    println!("\n==> whisper.cpp (Vulkan)");
+    let backend = resolve_backend(&cfg.stt.backend);
+    println!("\n==> whisper.cpp ({backend})");
     let bin = cfg.stt.server_bin_path();
     if bin.exists() {
         println!("  already built: {}", bin.display());
         return Ok(());
+    }
+
+    // Fail fast with a clear message: without the Vulkan loader the cmake configure
+    // below dies in a wall of output that doesn't name the real problem. (Only the
+    // Vulkan backend needs it — the CPU backend builds with no GPU libraries.)
+    if backend == "vulkan" && !has_vulkan() {
+        return Err(
+            "the Vulkan loader (libvulkan) is missing — the Vulkan whisper.cpp build needs it.\n  \
+             Install it (Arch: `vulkan-icd-loader` + your GPU's ICD, e.g. `vulkan-radeon`), then re-run.\n  \
+             Or set `stt.backend = \"cpu\"` in config.toml to build a CPU-only whisper-server instead."
+            .to_string(),
+        );
     }
 
     // Default layout: <root>/build/bin/whisper-server. Derive <root> and <build>.
@@ -159,15 +183,29 @@ fn build_whisper(cfg: &Config) -> Result<(), String> {
         println!("  using existing source at {}", repo.display());
     }
 
-    println!("  configuring (cmake -DGGML_VULKAN=ON)");
-    exec(Command::new("cmake").args([
-        "-B",
-        &build_dir.to_string_lossy(),
-        "-S",
-        &repo.to_string_lossy(),
-        "-DGGML_VULKAN=ON",
-        "-DCMAKE_BUILD_TYPE=Release",
-    ]))?;
+    // Base configure args, then backend-specific GGML flags.
+    let mut configure = vec![
+        "-B".to_string(),
+        build_dir.to_string_lossy().into_owned(),
+        "-S".to_string(),
+        repo.to_string_lossy().into_owned(),
+        "-DCMAKE_BUILD_TYPE=Release".to_string(),
+    ];
+    match backend {
+        "vulkan" => configure.push("-DGGML_VULKAN=ON".to_string()),
+        // CPU backend: OpenBLAS gives ~3-4x faster inference when it's installed.
+        _ => {
+            if has_lib("libopenblas") {
+                println!("  OpenBLAS found — enabling the BLAS backend (faster CPU inference)");
+                configure.push("-DGGML_BLAS=ON".to_string());
+                configure.push("-DGGML_BLAS_VENDOR=OpenBLAS".to_string());
+            } else {
+                println!("  CPU-only build (install `openblas` for ~3-4x faster inference)");
+            }
+        }
+    }
+    println!("  configuring (cmake)");
+    exec(Command::new("cmake").args(&configure))?;
 
     println!("  building whisper-server (this takes a while)");
     exec(Command::new("cmake").args([
@@ -421,11 +459,35 @@ pub(crate) fn have(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Resolve the configured `stt.backend` to a concrete backend for the build:
+/// `"auto"` picks Vulkan when its loader is present, else CPU; the explicit values
+/// pass through unchanged. Unknown strings are validated away at config load, but
+/// fall back to CPU here so `setup whisper` can never panic on one.
+fn resolve_backend(configured: &str) -> &'static str {
+    match configured {
+        "vulkan" => "vulkan",
+        "cpu" => "cpu",
+        _ => {
+            if has_vulkan() {
+                "vulkan"
+            } else {
+                "cpu"
+            }
+        }
+    }
+}
+
 /// Is the Vulkan loader present (so the Vulkan whisper.cpp build can run)?
 fn has_vulkan() -> bool {
+    has_lib("libvulkan")
+}
+
+/// Is a shared library matching `needle` registered with the dynamic linker?
+/// Used to decide which whisper.cpp backend (Vulkan, OpenBLAS) the host can build.
+fn has_lib(needle: &str) -> bool {
     Command::new("sh")
         .arg("-c")
-        .arg("ldconfig -p | grep -q libvulkan")
+        .arg(format!("ldconfig -p | grep -q {needle}"))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -443,4 +505,24 @@ fn print_next_steps() {
          \n\
          Then check it: whispy-client ping"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_backend_passes_through_explicit_values() {
+        assert_eq!(resolve_backend("vulkan"), "vulkan");
+        assert_eq!(resolve_backend("cpu"), "cpu");
+    }
+
+    #[test]
+    fn resolve_backend_auto_picks_a_concrete_backend() {
+        // "auto" depends on host Vulkan presence, but must always resolve to one
+        // of the two concrete backends so the build can never proceed on "auto".
+        assert!(matches!(resolve_backend("auto"), "vulkan" | "cpu"));
+        // An unknown string (shouldn't reach here past config validation) is safe.
+        assert!(matches!(resolve_backend("rocm"), "vulkan" | "cpu"));
+    }
 }

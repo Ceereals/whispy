@@ -45,10 +45,19 @@ pub struct Stt {
     pub model_path: String,
     pub language: String,
     pub server_bin: String,
+    /// whisper.cpp compute backend that `setup whisper` builds whisper-server with:
+    /// `"auto"` (Vulkan when the loader is present, else CPU), `"vulkan"`, or `"cpu"`.
+    /// Only consulted at build time; an installed binary keeps whatever it was built with.
+    #[serde(default = "default_backend")]
+    pub backend: String,
     /// Hard cap on a single `/inference` request. Without it a hung whisper-server
     /// (e.g. a GPU/Vulkan lockup) would strand the daemon in `transcribing` forever.
     #[serde(default = "default_stt_timeout_secs")]
     pub timeout_secs: u64,
+}
+
+fn default_backend() -> String {
+    "auto".to_string()
 }
 
 fn default_stt_timeout_secs() -> u64 {
@@ -249,6 +258,15 @@ impl Config {
                 "model file not found at {} — run `whispy-daemon setup model`",
                 model.display()
             ));
+        }
+
+        match self.stt.backend.as_str() {
+            "auto" | "vulkan" | "cpu" => {}
+            other => {
+                return Err(format!(
+                    "stt.backend must be \"auto\", \"vulkan\", or \"cpu\", got {other:?}"
+                ));
+            }
         }
 
         match self.injection.mode.as_str() {
@@ -456,6 +474,19 @@ mod tests {
         let (mut cfg, _g) = valid_config();
         cfg.filter.fuzzy_ratio = 1.5;
         assert!(cfg.validate().is_err());
+
+        let (mut cfg, _g) = valid_config();
+        cfg.stt.backend = "rocm".into();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_each_known_backend() {
+        for backend in ["auto", "vulkan", "cpu"] {
+            let (mut cfg, _g) = valid_config();
+            cfg.stt.backend = backend.into();
+            assert!(cfg.validate().is_ok(), "{backend} should be valid");
+        }
     }
 
     #[test]

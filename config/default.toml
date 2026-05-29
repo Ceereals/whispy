@@ -12,6 +12,12 @@ model_path = "~/.local/share/whisper.cpp/models/ggml-large-v3-turbo-q5_0.bin"
 # "auto" lets whisper detect IT/EN per clip (code-switching).
 language = "auto"
 server_bin = "~/.local/share/whisper.cpp/build/bin/whisper-server"
+# Compute backend `whispy-daemon setup whisper` builds whisper-server with:
+#   "auto"   = Vulkan if the loader is present, else CPU (default)
+#   "vulkan" = force the Vulkan GPU backend (needs libvulkan + a GPU ICD)
+#   "cpu"    = CPU only (auto-enables OpenBLAS when `libopenblas` is installed)
+# Only read at build time; an already-built binary keeps whatever it was built with.
+backend = "auto"
 timeout_secs = 30        # hard cap on one /inference request (guards against a hung GPU)
 
 [audio]
