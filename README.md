@@ -19,7 +19,9 @@
 Local, fast, Wayland-native dictation: a resident daemon keeps a
 [whisper.cpp](https://github.com/ggerganov/whisper.cpp) model in RAM, a thin client is fired
 from your Hyprland binds, and a [Quickshell](https://quickshell.org) pill shows live state.
-Speech never leaves your machine.
+Speech never leaves your machine. Hyprland gets the full experience (pill overlay); dictation
+also runs on **X11/Xorg and generic Wayland** (GNOME, KDE, Sway, XFCE, i3) — see
+[Non-Hyprland](#non-hyprland-x11-and-generic-wayland).
 
 ## Quickstart
 
@@ -83,8 +85,9 @@ Run any step on its own with:
 whispy-daemon setup doctor|whisper|model|ydotool|systemd|quickshell|verify
 ```
 
-The only manual step left is the Hyprland keybinds — `setup` prints them at the end (see
-[`docs/hyprland-setup.md`](docs/hyprland-setup.md)). Re-run `whispy-daemon setup verify` any
+The only manual step left is the keybinds — `setup` prints them at the end (Hyprland binds, see
+[`docs/hyprland-setup.md`](docs/hyprland-setup.md); X11/GNOME equivalents under
+[Non-Hyprland](#non-hyprland-x11-and-generic-wayland)). Re-run `whispy-daemon setup verify` any
 time to check that the model, daemon, `ydotoold`, and whisper-server are all up.
 
 ## How it works
@@ -128,19 +131,40 @@ reason, so you can see whether `fuzzy_ratio` / confidence bounds are too aggress
 
 ## Requirements
 
-- Hyprland / Wayland, PipeWire (`pw-record`), `wl-clipboard`, `libnotify`
-- `ydotool` (paste mode) and/or `wtype` (type mode)
+- PipeWire (`pw-record`), `libnotify`, `ydotool` (paste mode — works on both Wayland and X11)
+- **Wayland**: `wl-clipboard` (paste mode) and/or `wtype` (type mode)
+- **X11/Xorg** (e.g. XFCE, i3, Cinnamon, GNOME-on-Xorg): `xdotool` + `xclip` **or** `xsel`
 - For the Vulkan backend: a Vulkan-capable GPU (developed on RX 9070 XT / RDNA4) + `vulkan-icd-loader`. Not needed for the CPU backend.
 - Build tools for `setup whisper`: `git`, `cmake`, a C/C++ compiler
-- Optional: `openblas` for ~3-4× faster CPU inference; [Quickshell](https://quickshell.org) (Qt 6.5+) for the pill overlay
+- Optional: `openblas` for ~3-4× faster CPU inference; [Quickshell](https://quickshell.org) (Qt 6.5+) for the pill overlay (Wayland layer-shell only)
+
+Run `whispy-daemon setup doctor` to see exactly which tools your session needs — it detects
+the display server and lists the per-backend dependencies.
+
+### Non-Hyprland: X11 and generic Wayland
+
+Dictation runs everywhere; only the on-screen pill is Hyprland/layer-shell specific.
+
+- **Display server** — `injection.backend` (`[injection]` in config) selects the injection path:
+  `auto` (default) detects `WAYLAND_DISPLAY` then `DISPLAY`; force it with `"wayland"` or `"x11"`.
+  On X11, injection uses `xdotool type` / `xclip`/`xsel` instead of `wtype` / `wl-clipboard`.
+- **Status UI** — the Quickshell pill needs `wlr-layer-shell`, which X11 and GNOME/Mutter-Wayland
+  don't provide, so it's skipped there. Instead whispy fires desktop **notifications** on
+  success/error (`ui.notify = "auto"` notifies on X11, `"on"` always, `"off"` never).
+  `state.json` is still written, so you can wire your own tray/status indicator.
+- **Keybinds** — there are no Hyprland binds off Hyprland. Map your push-to-talk key to
+  `whispy-client toggle` (and `whispy-client cancel`) through your environment:
+  - **XFCE**: Settings → Keyboard → Application Shortcuts
+  - **X11 WMs** (i3/bspwm/...): `xbindkeys`, `sxhkd`, or the WM's own bind syntax
+  - **GNOME**: Settings → Keyboard → Custom Shortcuts
+- **Window-class auto-workflow** — uses `xdotool` on X11 and `hyprctl`/`swaymsg` on Wayland;
+  on GNOME/KDE-Wayland (no universal protocol) it's skipped. Manual `--workflow NAME` works everywhere.
 
 > **Platform notes.** `setup whisper` builds whisper.cpp with the backend `stt.backend` selects:
 > `auto` (default) builds Vulkan when its loader is present, else a CPU build (OpenBLAS-accelerated
 > when `libopenblas` is installed) — so GPU-less machines work out of the box. Force it with
 > `stt.backend = "vulkan"` or `"cpu"`. NVIDIA (CUDA) users should build whisper.cpp themselves and
 > point `stt.server_bin` at it.
-> AI-workflow auto-selection by focused-window class uses `hyprctl`, so it is **Hyprland-only**
-> (manual `--workflow NAME` still works everywhere; on other compositors the auto-match is skipped).
 
 <details>
 <summary><b>Project layout</b></summary>
