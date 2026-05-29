@@ -34,6 +34,8 @@ pub struct Config {
     #[serde(default)]
     pub llm: Llm,
     #[serde(default)]
+    pub ui: Ui,
+    #[serde(default)]
     pub workflow: Vec<Workflow>,
 }
 
@@ -136,9 +138,14 @@ pub struct Filter {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Injection {
     /// "paste" = clipboard + ydotool Ctrl+V (preserves accents; GUI apps only).
-    /// "type"  = wtype types the transcript directly (works in terminals too).
+    /// "type"  = wtype/xdotool types the transcript directly (works in terminals too).
     #[serde(default = "default_mode")]
     pub mode: String,
+    /// Display server / injection backend: "auto" (detect via WAYLAND_DISPLAY/DISPLAY),
+    /// "wayland" (wl-copy/wl-paste/wtype), or "x11" (xclip/xsel/xdotool). ydotool
+    /// delivers the paste keystroke on both.
+    #[serde(default = "default_inject_backend")]
+    pub backend: String,
     pub restore_clipboard_delay_ms: u64,
     pub paste_keys: String,
     /// Delay between ydotool key events. Without it the Ctrl+V events fire in one
@@ -153,6 +160,33 @@ fn default_key_delay() -> u64 {
 
 fn default_mode() -> String {
     "paste".to_string()
+}
+
+fn default_inject_backend() -> String {
+    "auto".to_string()
+}
+
+/// UI / status-feedback options.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Ui {
+    /// Desktop notifications on transient state transitions (`success`/`error`),
+    /// for sessions without the Quickshell pill:
+    ///   "auto" = notify only on X11 (where the layer-shell pill can't run),
+    ///   "on"   = always notify, "off" = never.
+    #[serde(default = "default_notify")]
+    pub notify: String,
+}
+
+impl Default for Ui {
+    fn default() -> Self {
+        Self {
+            notify: default_notify(),
+        }
+    }
+}
+
+fn default_notify() -> String {
+    "auto".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -279,6 +313,24 @@ impl Config {
             other => {
                 return Err(format!(
                     "injection.mode must be \"paste\" or \"type\", got {other:?}"
+                ));
+            }
+        }
+
+        match self.injection.backend.as_str() {
+            "auto" | "wayland" | "x11" => {}
+            other => {
+                return Err(format!(
+                    "injection.backend must be \"auto\", \"wayland\", or \"x11\", got {other:?}"
+                ));
+            }
+        }
+
+        match self.ui.notify.as_str() {
+            "auto" | "on" | "off" => {}
+            other => {
+                return Err(format!(
+                    "ui.notify must be \"auto\", \"on\", or \"off\", got {other:?}"
                 ));
             }
         }
@@ -487,6 +539,30 @@ mod tests {
             cfg.stt.backend = backend.into();
             assert!(cfg.validate().is_ok(), "{backend} should be valid");
         }
+    }
+
+    #[test]
+    fn validate_accepts_each_known_injection_backend() {
+        for backend in ["auto", "wayland", "x11"] {
+            let (mut cfg, _g) = valid_config();
+            cfg.injection.backend = backend.into();
+            assert!(cfg.validate().is_ok(), "{backend} should be valid");
+        }
+        let (mut cfg, _g) = valid_config();
+        cfg.injection.backend = "mir".into();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_each_known_notify_mode() {
+        for mode in ["auto", "on", "off"] {
+            let (mut cfg, _g) = valid_config();
+            cfg.ui.notify = mode.into();
+            assert!(cfg.validate().is_ok(), "{mode} should be valid");
+        }
+        let (mut cfg, _g) = valid_config();
+        cfg.ui.notify = "popup".into();
+        assert!(cfg.validate().is_err());
     }
 
     #[test]

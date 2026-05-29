@@ -7,6 +7,7 @@
 mod app;
 mod audio;
 mod config;
+mod display;
 mod filter;
 mod inject;
 mod llm;
@@ -31,6 +32,7 @@ use whispy_common::{State, StateSnapshot};
 
 use crate::app::App;
 use crate::config::Config;
+use crate::display::{Backend, DisplayServer};
 use crate::filter::Hallucinations;
 use crate::state::{StatePublisher, Status, now};
 use crate::stt::SttClient;
@@ -106,9 +108,21 @@ fn main() -> ExitCode {
 fn run(cfg: Config) -> std::io::Result<()> {
     info!(model = %cfg.stt.model, "starting whispy-daemon");
 
-    // Child tools (`wtype`, `wl-copy`, `wl-paste`) need WAYLAND_DISPLAY; a systemd
-    // user service started before the compositor imports the graphical env has none.
-    ensure_wayland_display();
+    // Decide which display server we're driving (Wayland vs X11) before touching
+    // any injection tool. `auto` reads the session env; an explicit override forces
+    // it. If nothing is detectable, default to Wayland (the historical behavior).
+    let server = display::resolve_from_env(Backend::parse(&cfg.injection.backend)).unwrap_or_else(
+        || {
+            warn!("could not detect display server (no WAYLAND_DISPLAY/DISPLAY); defaulting to Wayland");
+            DisplayServer::Wayland
+        },
+    );
+    info!(display_server = ?server, "resolved display server");
+
+    // Child tools (`wtype`/`xdotool`, `wl-*`/`xclip`) need WAYLAND_DISPLAY or DISPLAY;
+    // a systemd user service started before the compositor imports the graphical env
+    // may have neither, so discover/seed it here.
+    ensure_display_env(server);
 
     // Surface missing injection/capture tools up front (warn-only: injection errors
     // already guide the user, but this points at the fix before the first dictation).
@@ -238,11 +252,22 @@ fn load_blacklist(cfg: &Config) -> Hallucinations {
     Hallucinations::from_phrases(embedded.phrases)
 }
 
-/// Ensure `WAYLAND_DISPLAY` is set so child injection tools can reach the
-/// compositor. If it is already set we leave it; otherwise we discover the
-/// Wayland socket under `$XDG_RUNTIME_DIR` and set it for ourselves and our
-/// children. Best-effort: a failure only warns, since `paste`/`type` injection
-/// is what ultimately surfaces the error.
+/// Ensure the display-server env var the injection tools need is set, so a systemd
+/// user service started before the compositor imported the graphical env can still
+/// reach the session. Best-effort: a failure only warns, since `paste`/`type`
+/// injection is what ultimately surfaces the error.
+///
+/// - Wayland: discover the lowest-numbered `wayland-N` socket under
+///   `$XDG_RUNTIME_DIR` and set `WAYLAND_DISPLAY` if unset.
+/// - X11: default `DISPLAY` to `:0` if unset (X11 has no per-socket scan; `:0` is
+///   the near-universal default display).
+fn ensure_display_env(server: DisplayServer) {
+    match server {
+        DisplayServer::Wayland => ensure_wayland_display(),
+        DisplayServer::X11 => ensure_x_display(),
+    }
+}
+
 fn ensure_wayland_display() {
     if std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty()) {
         return;
@@ -270,6 +295,16 @@ fn ensure_wayland_display() {
         }
         None => warn!("WAYLAND_DISPLAY unset and no wayland-N socket found; injection may fail"),
     }
+}
+
+fn ensure_x_display() {
+    if std::env::var_os("DISPLAY").is_some_and(|v| !v.is_empty()) {
+        return;
+    }
+    // Safe for the same reason as the WAYLAND_DISPLAY write above: only the
+    // log-appender worker is live, and it never reads the environment.
+    unsafe { std::env::set_var("DISPLAY", ":0") };
+    warn!("DISPLAY unset; defaulting to \":0\" (set DISPLAY if your X server uses another)");
 }
 
 /// Pick the lowest-numbered `wayland-<N>` socket from directory entry names.

@@ -38,7 +38,13 @@ fuzzy_ratio = 0.85        # hallucination blacklist fuzzy-match threshold
 hallucinations_path = "~/.config/whispy/hallucinations.toml"
 
 [injection]
-mode = "paste"            # "paste" (clipboard+Ctrl+V, GUI apps, keeps accents) | "type" (wtype, works in terminals too)
+mode = "paste"            # "paste" (clipboard+Ctrl+V, GUI apps, keeps accents) | "type" (wtype/xdotool, works in terminals too)
+# Display server / injection backend:
+#   "auto"    = detect from WAYLAND_DISPLAY/DISPLAY (default)
+#   "wayland" = wl-copy/wl-paste clipboard, wtype typing
+#   "x11"     = xclip/xsel clipboard, xdotool typing
+# ydotool delivers the paste keystroke on both.
+backend = "auto"
 restore_clipboard_delay_ms = 300
 # ydotool keycodes: Ctrl down, V down, V up, Ctrl up.
 paste_keys = "29:1 47:1 47:0 29:0"
@@ -62,6 +68,12 @@ corrections = {}
 # Text-expansion shortcuts. Placeholders: {{DATE}}, {{TIME}}, {{CLIPBOARD}}.
 # entries = { "my email" = "me@example.com", "stamp" = "{{DATE}} {{TIME}}" }
 entries = {}
+
+[ui]
+# Desktop notifications on success/error, for sessions without the Quickshell pill:
+#   "auto" = notify only on X11 (the layer-shell pill can't run there) (default)
+#   "on"   = always notify   "off" = never
+notify = "auto"
 
 [llm]
 # OpenAI-compatible chat endpoint. Default = local ollama. Set api_key for cloud.

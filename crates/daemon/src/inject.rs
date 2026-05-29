@@ -303,6 +303,7 @@ mod tests {
     fn injector_with_keys(paste_keys: &str) -> Injector {
         Injector::new(&crate::config::Injection {
             mode: "paste".to_string(),
+            backend: "auto".to_string(),
             restore_clipboard_delay_ms: 150,
             paste_keys: paste_keys.to_string(),
             key_delay_ms: 25,
