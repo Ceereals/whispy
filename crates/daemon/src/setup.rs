@@ -541,6 +541,9 @@ fn install_pill_service() -> Result<(), String> {
 }
 
 fn pill_unit_contents() -> &'static str {
+    // QML2_IMPORT_PATH points the QML engine at ~/.config/quickshell so `import Whispy`
+    // resolves the module dir — Quickshell does not add the config root to the import
+    // path, so without this `quickshell -c whispy` dies with "module not installed".
     "[Unit]\n\
      Description=whispy dictation pill (standalone Quickshell overlay)\n\
      Documentation=https://github.com/Ceereals/whispy\n\
@@ -549,6 +552,7 @@ fn pill_unit_contents() -> &'static str {
      \n\
      [Service]\n\
      Type=simple\n\
+     Environment=QML2_IMPORT_PATH=%h/.config/quickshell\n\
      ExecStart=quickshell -c whispy\n\
      Restart=on-failure\n\
      RestartSec=2\n\

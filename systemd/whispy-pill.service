@@ -6,6 +6,9 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
+# Quickshell does not add the config root to the QML import path, so point it
+# here or `import Whispy` fails with "module not installed".
+Environment=QML2_IMPORT_PATH=%h/.config/quickshell
 ExecStart=quickshell -c whispy
 Restart=on-failure
 RestartSec=2
