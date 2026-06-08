@@ -41,6 +41,18 @@ Scope {
         onTextChanged: scope._parseAndApply(text())
     }
 
+    // The daemon writes state.json atomically (tmp + rename), which swaps the
+    // inode out from under FileView's inotify watch — so onFileChanged stops
+    // firing after the first replace and the pill never leaves "idle". Poll
+    // reload() to pick up every write regardless of the rename. reload() on
+    // unchanged content is a no-op (onTextChanged only fires on real changes).
+    Timer {
+        interval: 100
+        running:  true
+        repeat:   true
+        onTriggered: stateFile.reload()
+    }
+
     function _parseAndApply(raw) {
         if (!raw || raw.length === 0) {
             // Empty file → keep last known state, let stale timer clear it
