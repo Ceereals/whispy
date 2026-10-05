@@ -390,7 +390,55 @@ class WhispyTray:
         except Exception:
             return True
 
+    # --- Language Selection Helpers ---
+    def get_configured_language(self):
+        if not os.path.isfile(self.config_file):
+            return "es"
+        try:
+            with open(self.config_file, "rb") as f:
+                data = tomllib.load(f)
+                return str(data.get("stt", {}).get("language", "es")).strip().lower()
+        except Exception:
+            return "es"
 
+    def set_language(self, lang_code):
+        if not os.path.isfile(self.config_file):
+            return
+        try:
+            with open(self.config_file, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            if re.search(r'(?m)^\s*language\s*=', content):
+                content = re.sub(
+                    r'(?m)^\s*language\s*=.*$',
+                    f'language = "{lang_code}"',
+                    content
+                )
+            else:
+                if "[stt]" in content:
+                    content = content.replace("[stt]\n", f'[stt]\nlanguage = "{lang_code}"\n')
+                else:
+                    content += f'\n[stt]\nlanguage = "{lang_code}"\n'
+
+            with open(self.config_file, "w", encoding="utf-8") as f:
+                f.write(content)
+
+            # Restart daemon so it loads the new language
+            subprocess.Popen(["systemctl", "--user", "restart", "whispy-daemon.service"])
+
+            lang_names = {"es": "Spanish (es)", "en": "English (en)", "auto": "Automatic (auto)"}
+            name = lang_names.get(lang_code, lang_code)
+            subprocess.Popen([
+                "notify-send",
+                "-a", "Whispy",
+                "-i", "whispy-idle",
+                "Dictation Language",
+                f"Switched to: {name}"
+            ])
+            self.rebuild_menu_tree()
+            self.emit_signals()
+        except Exception as e:
+            sys.stderr.write(f"whispy-tray: error updating language: {e}\n")
 
     # --- History & Clipboard helpers ---
     def load_recent_transcripts(self, limit=10):
@@ -585,6 +633,48 @@ class WhispyTray:
             "id": 6,
             "props": {"type": GLib.Variant("s", "separator")},
             "children": [],
+        })
+
+        # 7b. Dictation Language (Submenu)
+        current_lang = self.get_configured_language()
+        lang_label = "Spanish" if current_lang == "es" else ("English" if current_lang == "en" else "Automatic")
+        lang_children = [
+            {
+                "id": 71,
+                "props": {
+                    "label": GLib.Variant("s", f"{'✓ ' if current_lang == 'es' else '    '}Spanish (es)"),
+                    "enabled": GLib.Variant("b", True),
+                },
+                "children": [],
+                "action": lambda: self.set_language("es"),
+            },
+            {
+                "id": 72,
+                "props": {
+                    "label": GLib.Variant("s", f"{'✓ ' if current_lang == 'en' else '    '}English (en)"),
+                    "enabled": GLib.Variant("b", True),
+                },
+                "children": [],
+                "action": lambda: self.set_language("en"),
+            },
+            {
+                "id": 73,
+                "props": {
+                    "label": GLib.Variant("s", f"{'✓ ' if current_lang == 'auto' else '    '}Automatic (auto)"),
+                    "enabled": GLib.Variant("b", True),
+                },
+                "children": [],
+                "action": lambda: self.set_language("auto"),
+            },
+        ]
+        root_children.append({
+            "id": 70,
+            "props": {
+                "label": GLib.Variant("s", f"Language: {lang_label}"),
+                "children-display": GLib.Variant("s", "submenu"),
+                "icon-name": GLib.Variant("s", "preferences-desktop-locale"),
+            },
+            "children": lang_children,
         })
 
         # 8. Configuration
