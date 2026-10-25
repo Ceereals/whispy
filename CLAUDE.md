@@ -96,6 +96,8 @@ on it, and the QML pill reads the `state.json` shape.
 - Tilde paths (`~/...`) in config are expanded by the daemon.
 - Logs: JSON lines to `$XDG_STATE_HOME/whispy/daemon.log`; level via `RUST_LOG`
   (default `info`). whisper-server output goes to `whisper-server.log` in the state dir.
+  Both logs and `transcripts.jsonl` are size-capped via `config::rotate_if_larger`
+  (one `.1` generation); `stats` reads both generations.
 
 If you add a config field, update both the struct in `config.rs` and
 `config/default.toml` (with an explanatory comment), and keep `#[serde(default)]`

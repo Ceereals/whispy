@@ -149,6 +149,11 @@ fn run(cfg: Config) -> std::io::Result<()> {
     if let Some(parent) = whisper_log.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    // Rotate only here, at daemon start: in-process restarts append, so the output
+    // of a crash survives the monitor respawning the server.
+    if let Err(e) = config::rotate_if_larger(&whisper_log, config::WHISPER_LOG_MAX_BYTES) {
+        warn!(error = %e, "could not rotate whisper-server.log");
+    }
     let whisper = Arc::new(Mutex::new(WhisperServer::spawn(&cfg.stt, &whisper_log)?));
     if !whisper
         .lock()
@@ -318,11 +323,17 @@ fn pick_wayland_socket(names: impl Iterator<Item = String>) -> Option<String> {
         .map(|(_, name)| name)
 }
 
-/// Initialise JSON-lines logging to `$XDG_STATE_HOME/whispy/daemon.log`.
+/// Initialise JSON-lines logging to `$XDG_STATE_HOME/whispy/daemon.log`, rotating
+/// it to `daemon.log.1` first if it has outgrown [`config::DAEMON_LOG_MAX_BYTES`].
 /// The returned guard flushes the non-blocking writer; keep it alive for the run.
 fn init_logging() -> std::io::Result<WorkerGuard> {
     let dir = config::state_dir();
     std::fs::create_dir_all(&dir)?;
+    // Logging isn't up yet, so a failed rotation can only be reported on stderr.
+    if let Err(e) = config::rotate_if_larger(&dir.join("daemon.log"), config::DAEMON_LOG_MAX_BYTES)
+    {
+        eprintln!("whispy-daemon: could not rotate daemon.log: {e}");
+    }
     let appender = tracing_appender::rolling::never(&dir, "daemon.log");
     let (writer, guard) = tracing_appender::non_blocking(appender);
     tracing_subscriber::fmt()

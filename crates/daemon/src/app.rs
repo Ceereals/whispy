@@ -270,7 +270,9 @@ fn should_notify(mode: &str, server: DisplayServer) -> bool {
 }
 
 /// Append one transcription record (accepted or dropped) to `transcripts.jsonl`
-/// under `$XDG_STATE_HOME/whispy`, for offline calibration of the filter.
+/// under `$XDG_STATE_HOME/whispy`, for offline calibration of the filter. The file
+/// holds dictated text, so it is capped: past [`config::TRANSCRIPTS_MAX_BYTES`] it
+/// rotates to `transcripts.jsonl.1`, replacing the older generation.
 fn log_transcript(t: &Transcription, drop_reason: Option<&str>) {
     use std::io::Write;
 
@@ -285,6 +287,9 @@ fn log_transcript(t: &Transcription, drop_reason: Option<&str>) {
     });
 
     let path = config::state_dir().join("transcripts.jsonl");
+    if let Err(e) = config::rotate_if_larger(&path, config::TRANSCRIPTS_MAX_BYTES) {
+        warn!(error = %e, "failed to rotate transcript log");
+    }
     let result = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
