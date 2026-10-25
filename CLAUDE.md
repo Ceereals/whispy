@@ -46,7 +46,7 @@ returns immediately, UI follows `state.json`) → hallucination filter →
 
 ## Workspace layout
 
-Cargo workspace (`resolver = "3"`, `edition = "2024"`, MSRV `rust-version = 1.85`).
+Cargo workspace (`resolver = "3"`, `edition = "2024"`, MSRV `rust-version = 1.88`).
 
 | Crate | Path | Role |
 |-------|------|------|
@@ -124,7 +124,7 @@ binaries (not whisper-server/model), publish a GitHub release, and push to the A
 
 ## Conventions
 
-- **Edition 2024**, MSRV 1.85 — don't use features newer than that.
+- **Edition 2024**, MSRV 1.88 (let-chains, `slice::as_chunks`) — don't use features newer than that.
 - Every module opens with a `//!` doc comment explaining its role; public items get
   `///` docs. Match this density.
 - The daemon is **threaded, not async** — plain `std::thread`, `Mutex`, `Arc`,

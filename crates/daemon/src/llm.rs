@@ -40,9 +40,12 @@ pub fn transform(cfg: &Llm, system_prompt: &str, user_text: &str) -> Result<Stri
 
     let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
 
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(cfg.timeout_secs.max(1)))
-        .build();
+    // Non-2xx responses come back as `Ok` so the error body can be reported.
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(cfg.timeout_secs.max(1))))
+        .http_status_as_error(false)
+        .build()
+        .into();
 
     let body = serde_json::json!({
         "model": cfg.model,
@@ -55,26 +58,25 @@ pub fn transform(cfg: &Llm, system_prompt: &str, user_text: &str) -> Result<Stri
     })
     .to_string();
 
-    let mut req = agent.post(&url).set("Content-Type", "application/json");
+    let mut req = agent.post(&url).header("Content-Type", "application/json");
     if !cfg.api_key.trim().is_empty() {
-        req = req.set("Authorization", &format!("Bearer {}", cfg.api_key));
+        req = req.header("Authorization", format!("Bearer {}", cfg.api_key));
     }
 
-    let resp = match req.send_string(&body) {
-        Ok(resp) => resp,
-        Err(ureq::Error::Status(code, resp)) => {
-            return Err(LlmError::Http(format!(
-                "status {code}: {}",
-                resp.into_string().unwrap_or_default()
-            )));
-        }
-        Err(ureq::Error::Transport(t)) => {
-            return Err(LlmError::Http(t.to_string()));
-        }
-    };
+    let mut resp = req
+        .send(&body[..])
+        .map_err(|e| LlmError::Http(e.to_string()))?;
+    if !resp.status().is_success() {
+        return Err(LlmError::Http(format!(
+            "status {}: {}",
+            resp.status().as_u16(),
+            resp.body_mut().read_to_string().unwrap_or_default()
+        )));
+    }
 
     let body = resp
-        .into_string()
+        .body_mut()
+        .read_to_string()
         .map_err(|e| LlmError::Http(e.to_string()))?;
 
     #[derive(serde::Deserialize)]

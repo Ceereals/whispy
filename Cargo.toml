@@ -5,7 +5,7 @@ members = ["crates/common", "crates/daemon", "crates/client"]
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "MIT"
 authors = ["Riccardo Romoli <romoliriccardo.rr@gmail.com>"]
 description = "System-wide push-to-talk dictation for Hyprland (Wayland), powered by whisper.cpp (Vulkan)."
@@ -20,6 +20,6 @@ whispy-common = { path = "crates/common" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }
-toml = "0.8"
+toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }

@@ -207,7 +207,7 @@ where
 
         leftover.extend_from_slice(&chunk[..n]);
         let full = leftover.len() - (leftover.len() % 2);
-        for pair in leftover[..full].chunks_exact(2) {
+        for pair in leftover[..full].as_chunks::<2>().0 {
             // Drop the stream-start transient.
             if skipped < skip_samples {
                 skipped += 1;
