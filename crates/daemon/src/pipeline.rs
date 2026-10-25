@@ -89,7 +89,9 @@ fn apply_corrections(text: &str, corrections: &BTreeMap<String, String>) -> Stri
 }
 
 /// Expand text-expansion snippets. Longer triggers are applied first so they win
-/// over shorter overlapping ones; placeholders in replacements are resolved live.
+/// over shorter overlapping ones; placeholders in replacements are resolved live,
+/// and only for snippets whose trigger is present (each one may run `wl-paste` or
+/// `date`, so don't pay for every configured snippet on every transcript).
 fn apply_snippets(
     text: &str,
     entries: &BTreeMap<String, String>,
@@ -103,6 +105,9 @@ fn apply_snippets(
 
     let mut acc = text.to_string();
     for (trigger, replacement) in sorted {
+        if !contains_phrase_ci(&acc, trigger) {
+            continue;
+        }
         let resolved = resolve_placeholders(replacement, backend);
         acc = replace_phrase_ci(&acc, trigger, &resolved);
     }
@@ -131,6 +136,17 @@ fn replace_phrase_ci(text: &str, from: &str, to: &str) -> String {
         }
     }
     out
+}
+
+/// Does `text` contain `phrase` as a whole-word, case-insensitive match? The
+/// same matching rule as [`replace_phrase_ci`].
+fn contains_phrase_ci(text: &str, phrase: &str) -> bool {
+    let pat: Vec<char> = phrase.chars().collect();
+    if pat.is_empty() {
+        return false;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    (0..chars.len()).any(|i| matches_at(&chars, i, &pat) && boundary_ok(&chars, i, pat.len()))
 }
 
 fn matches_at(chars: &[char], i: usize, pat: &[char]) -> bool {
@@ -274,6 +290,8 @@ mod tests {
     /// A stub backend for snippet tests: a fixed clipboard, no real subprocesses.
     struct StubBackend {
         clipboard: String,
+        /// How many times the clipboard was read (each is a `wl-paste` for real).
+        reads: std::sync::atomic::AtomicUsize,
     }
 
     impl InjectBackend for StubBackend {
@@ -296,6 +314,8 @@ mod tests {
             Ok(())
         }
         fn read_clipboard_text(&self) -> String {
+            self.reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.clipboard.clone()
         }
     }
@@ -303,6 +323,7 @@ mod tests {
     fn stub(clipboard: &str) -> StubBackend {
         StubBackend {
             clipboard: clipboard.to_string(),
+            reads: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -354,6 +375,34 @@ mod tests {
         entries.insert("brb".to_string(), "be right back".to_string());
 
         assert_eq!(apply_snippets("brb", &entries, &stub("")), "be right back");
+    }
+
+    #[test]
+    fn apply_snippets_skips_placeholders_of_absent_triggers() {
+        let mut entries = BTreeMap::new();
+        entries.insert("paste".to_string(), "<{{CLIPBOARD}}>".to_string());
+
+        let backend = stub("secret");
+        assert_eq!(
+            apply_snippets("hello world", &entries, &backend),
+            "hello world"
+        );
+        assert_eq!(
+            backend.reads.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "clipboard read for an absent trigger"
+        );
+        // A word merely containing the trigger doesn't count either.
+        assert_eq!(apply_snippets("pasted", &entries, &backend), "pasted");
+        assert_eq!(backend.reads.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn contains_phrase_ci_matches_whole_words_only() {
+        assert!(contains_phrase_ci("Please PASTE here", "paste"));
+        assert!(contains_phrase_ci("send my email now", "my email"));
+        assert!(!contains_phrase_ci("pasted", "paste"));
+        assert!(!contains_phrase_ci("anything", ""));
     }
 
     #[test]
