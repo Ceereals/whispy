@@ -88,9 +88,12 @@ impl SttClient {
             language: cfg.language.clone(),
             prompt,
             // Non-2xx responses come back as `Ok` so the error body can be reported.
+            // whisper-server is always local: never route audio through an
+            // environment proxy (ureq 3 honors HTTP(S)_PROXY by default).
             agent: ureq::Agent::config_builder()
                 .timeout_global(Some(Duration::from_secs(cfg.timeout_secs)))
                 .http_status_as_error(false)
+                .proxy(None)
                 .build()
                 .into(),
         }

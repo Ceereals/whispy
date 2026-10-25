@@ -40,12 +40,16 @@ pub fn transform(cfg: &Llm, system_prompt: &str, user_text: &str) -> Result<Stri
 
     let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
 
-    // Non-2xx responses come back as `Ok` so the error body can be reported.
-    let agent: ureq::Agent = ureq::Agent::config_builder()
+    // Non-2xx responses come back as `Ok` so the error body can be reported. A
+    // local endpoint (the default ollama) bypasses any environment proxy, which
+    // ureq 3 honors by default; a remote API keeps using it.
+    let mut config = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(cfg.timeout_secs.max(1))))
-        .http_status_as_error(false)
-        .build()
-        .into();
+        .http_status_as_error(false);
+    if is_loopback_url(&url) {
+        config = config.proxy(None);
+    }
+    let agent: ureq::Agent = config.build().into();
 
     let body = serde_json::json!({
         "model": cfg.model,
@@ -108,9 +112,39 @@ pub fn transform(cfg: &Llm, system_prompt: &str, user_text: &str) -> Result<Stri
     Ok(content.trim().to_string())
 }
 
+/// Does `url` point at this machine (`localhost`, 127.0.0.0/8 or `::1`)?
+fn is_loopback_url(url: &str) -> bool {
+    let Ok(uri) = url.parse::<ureq::http::Uri>() else {
+        return false;
+    };
+    match uri.host() {
+        Some("localhost") => true,
+        Some(host) => host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback()),
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loopback_urls_are_detected() {
+        assert!(is_loopback_url(
+            "http://localhost:11434/v1/chat/completions"
+        ));
+        assert!(is_loopback_url("http://127.0.0.1:11434/v1"));
+        assert!(is_loopback_url("http://[::1]:8080/v1"));
+        assert!(!is_loopback_url(
+            "https://api.openai.com/v1/chat/completions"
+        ));
+        assert!(!is_loopback_url("http://192.168.1.10:11434/v1"));
+        assert!(!is_loopback_url("not a url"));
+    }
 
     #[test]
     fn disabled_when_model_empty() {
