@@ -267,10 +267,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "aggregate() returns the literal 0.0 when there are no segments"
-    )]
     fn aggregates_empty_segments_to_zero() {
         let resp = Response {
             text: "  hello world  ".to_string(),
@@ -279,8 +275,8 @@ mod tests {
         };
         let t = aggregate(resp);
         assert_eq!(t.text, "hello world");
-        assert_eq!(t.avg_logprob, 0.0);
-        assert_eq!(t.no_speech_prob, 0.0);
+        assert!(t.avg_logprob.abs() < f32::EPSILON);
+        assert!(t.no_speech_prob.abs() < f32::EPSILON);
         assert_eq!(t.language.as_deref(), Some("en"));
     }
 

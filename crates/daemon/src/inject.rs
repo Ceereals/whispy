@@ -532,7 +532,7 @@ mod tests {
     #[test]
     fn empty_paste_keys_is_a_paste_error() {
         let inj = injector_with_keys("   ");
-        assert!(inj.paste_keys.is_empty());
+        assert_eq!(inj.paste_keys, Vec::<String>::new());
         match inj.inject("hello") {
             Err(InjectError::Paste(msg)) => assert!(msg.contains("no paste_keys")),
             other => panic!("expected Paste error, got {other:?}"),

@@ -161,7 +161,7 @@ mod tests {
         // main falls back to this list (and `expect`s it) when the file is missing.
         let list = Hallucinations::parse(crate::config::default_hallucinations_toml())
             .expect("embedded hallucinations parse");
-        assert!(!list.phrases.is_empty());
+        assert_ne!(list.phrases, Vec::<String>::new());
     }
 
     #[test]
