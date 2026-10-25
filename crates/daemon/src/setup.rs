@@ -55,6 +55,8 @@ enum SetupStep {
     Systemd,
     /// Install the Quickshell pill module.
     Quickshell,
+    /// Install the Omarchy 4 bar module (dictation state in Omarchy's own bar).
+    Omarchy,
     /// Check that the installed system is actually ready to dictate.
     Verify,
     /// Print the push-to-talk keybinds for your compositor config.
@@ -73,6 +75,7 @@ pub fn run(cfg: &Config, args: SetupArgs) -> ExitCode {
         Some(SetupStep::Ydotool) => setup_ydotool(),
         Some(SetupStep::Systemd) => install_config(cfg).and_then(|()| install_systemd()),
         Some(SetupStep::Quickshell) => install_quickshell(!args.no_pill),
+        Some(SetupStep::Omarchy) => install_omarchy_bar_module(),
         Some(SetupStep::Verify) => {
             verify(cfg);
             Ok(())
@@ -122,6 +125,9 @@ fn full(cfg: &Config, args: &SetupArgs) -> Result<(), String> {
         // Install the pill on request, or automatically when Quickshell is present —
         // no point shipping the module to a machine that can't render it.
         install_quickshell(!args.no_pill)?;
+    }
+    if server == DisplayServer::Wayland && HyprConfig::detect() == HyprConfig::OmarchyLua {
+        install_omarchy_bar_module()?;
     }
     verify(cfg);
     print_next_steps(server);
@@ -610,6 +616,53 @@ fn quickshell_source() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.join("qmldir").exists())
 }
 
+// --- omarchy bar module ------------------------------------------------------
+
+/// The Omarchy 4 bar module (`ui/omarchy/whispy.qml`), embedded so every install
+/// method (AUR, install.sh, cargo) can drop it in place without packaging changes.
+const OMARCHY_BAR_MODULE: &str = include_str!("../../../ui/omarchy/whispy.qml");
+
+/// Install the bar module where Omarchy looks for custom QML modules,
+/// `~/.config/omarchy/bar/modules/whispy.qml`. Rewritten on every run so
+/// upgrades reach it: it is whispy's file, tuned through its shell.json settings
+/// rather than edited. Adding it to the bar layout is left to the user (like the
+/// keybinds): `omarchy bar put`/`set` only handle registered widgets and existing
+/// entries, and shell.json is theirs.
+fn install_omarchy_bar_module() -> Result<(), String> {
+    println!("\n==> Omarchy bar module");
+    let path = omarchy_bar_module_path();
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    fs::write(&path, OMARCHY_BAR_MODULE).map_err(|e| format!("{}: {e}", path.display()))?;
+    println!("  installed {}", path.display());
+    println!(
+        "  show it in the bar: add {} to a section of \"bar\".\"layout\" in\n  \
+         ~/.config/omarchy/shell.json (it reloads on save; or run omarchy-restart-shell).\n  \
+         Left click toggles dictation, right/middle click cancels. Optional: \"hideWhenIdle\": true.",
+        OMARCHY_BAR_ENTRY
+    );
+    Ok(())
+}
+
+/// The `bar.layout` entry that loads the module (custom QML modules resolve
+/// `<id>.qml` under `~/.config/omarchy/bar/modules/`).
+const OMARCHY_BAR_ENTRY: &str = r#"{ "id": "whispy", "type": "qml" }"#;
+
+/// Where the Omarchy bar looks for custom modules. Omarchy hardcodes
+/// `$HOME/.config/omarchy` (it ignores `$XDG_CONFIG_HOME`), so this does too.
+fn omarchy_bar_module_path() -> PathBuf {
+    config::expand("~/.config/omarchy/bar/modules/whispy.qml")
+}
+
+/// `$XDG_CONFIG_HOME`, defaulting to `~/.config`.
+fn config_home() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| config::expand("~/.config"))
+}
+
 // --- verify -----------------------------------------------------------------
 
 /// Check the *running* system, not just tools on PATH: are the model and binary in
@@ -821,11 +874,7 @@ impl HyprConfig {
         let omarchy = std::env::var_os("OMARCHY_PATH").is_some_and(|p| !p.is_empty())
             || Path::new("/usr/share/omarchy").is_dir()
             || config::expand("~/.local/share/omarchy").is_dir();
-        let lua = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| config::expand("~/.config"))
-            .join("hypr/hyprland.lua")
-            .is_file();
+        let lua = config_home().join("hypr/hyprland.lua").is_file();
         HyprConfig::pick(omarchy, lua)
     }
 
@@ -972,6 +1021,23 @@ mod tests {
             assert!(!names.contains(&"wl-copy"));
             assert!(!names.contains(&"wtype"));
         }
+    }
+
+    #[test]
+    fn omarchy_bar_module_is_embedded_and_matches_its_entry() {
+        // The module is a QML Item that registers as a bar click target, and the
+        // printed layout entry names the file it is installed as.
+        assert!(OMARCHY_BAR_MODULE.contains("import Quickshell.Io"));
+        assert!(OMARCHY_BAR_MODULE.contains("function triggerPress(button)"));
+        assert!(OMARCHY_BAR_MODULE.contains("whispy-client toggle"));
+        assert!(OMARCHY_BAR_ENTRY.contains(r#""type": "qml""#));
+        let id = OMARCHY_BAR_ENTRY.split('"').nth(3).expect("id value");
+        assert_eq!(
+            omarchy_bar_module_path()
+                .file_name()
+                .and_then(|n| n.to_str()),
+            Some(format!("{id}.qml").as_str())
+        );
     }
 
     #[test]

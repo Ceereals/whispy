@@ -36,6 +36,10 @@ Hyprland keybind ──► whispy-client ──(unix socket)──► whispy-dae
   (Vulkan, or CPU/OpenBLAS). Built and managed per-machine by `whispy-daemon setup`;
   **not** shipped in releases.
 - **pill UI** — Quickshell layer overlay that reads `state.json` (`ui/quickshell/`).
+- **Omarchy bar module** — `ui/omarchy/whispy.qml`, an Omarchy 4 custom bar module
+  (also reads `state.json`), embedded in the daemon via `include_str!` and installed by
+  `setup` to `~/.config/omarchy/bar/modules/`. No Python or other new runtime
+  dependencies: UI stays QML on the Quickshell that Omarchy already ships.
 
 ### Recording flow
 
@@ -118,7 +122,10 @@ cargo run -p whispy-client -- status      # talk to a running daemon
 
 CI (`.github/workflows/ci.yml`) runs, in order, on every push to `main` and every PR:
 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
-`cargo build --workspace --locked`, `cargo test --workspace --locked`. **Match this
+`cargo build --workspace --locked`, `cargo test --workspace --locked`. A separate `qml`
+job runs the bar module's tests:
+`QT_QPA_PLATFORM=offscreen qmltestrunner -import ui/omarchy/tests/stubs -input ui/omarchy/tests/tst_whispy.qml`
+(Ubuntu: `qt6-declarative-dev-tools qml6-module-qttest qml6-module-qtquick`). **Match this
 locally before pushing.** `--locked` means `Cargo.lock` must be committed and current.
 
 Releases (`.github/workflows/release.yml`) fire on `v*` tags: build, package the two
@@ -148,6 +155,8 @@ binaries (not whisper-server/model), publish a GitHub release, and push to the A
 ## Where things live
 
 - `ui/quickshell/` — QML pill overlay (`Pill.qml`, `PillPanel.qml`, `Tokens.qml`); reads `state.json`.
+- `ui/omarchy/` — Omarchy bar module (`whispy.qml`) plus `tests/` (qmltestrunner with
+  stub Quickshell modules and a mock `bar`).
 - `systemd/whispy-daemon.service` — user unit (installed by `setup`).
 - `packaging/aur/` — AUR `PKGBUILD`s (`whispy` release + `whispy-git`).
 - `scripts/` — `benchmark.sh` (STT latency per model), `setup-ydotool.sh`.

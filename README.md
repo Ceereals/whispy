@@ -99,7 +99,7 @@ whispy-daemon setup                 # --quickshell forces the pill; --no-pill in
 Run any step on its own with:
 
 ```sh
-whispy-daemon setup doctor|whisper|model|ydotool|systemd|quickshell|verify|keybinds
+whispy-daemon setup doctor|whisper|model|ydotool|systemd|quickshell|omarchy|verify|keybinds
 ```
 
 The only manual step left is the keybinds — `setup` prints them at the end, in the syntax of
@@ -123,6 +123,8 @@ Hyprland keybind ──► whispy-client ──(unix socket)──► whispy-dae
 - **whispy-client** — tiny binary called from Hyprland binds (`start` / `stop` / `cancel` / `toggle`).
 - **whisper-server** — whisper.cpp built with the backend `stt.backend` picks: Vulkan (developed on AMD RDNA4, no ROCm) or CPU (OpenBLAS-accelerated when available).
 - **pill UI** — Quickshell layer overlay reading the state file ([`ui/quickshell/`](ui/quickshell/)).
+- **Omarchy bar module** — the same live state as an icon in Omarchy 4's bar ([`ui/omarchy/`](ui/omarchy/));
+  `setup` installs it on Omarchy, see the [Omarchy notes](docs/hyprland-setup.md#omarchy).
 
 **Two injection modes** (`injection.mode`):
 
@@ -199,6 +201,7 @@ systemd/        whispy-daemon.service (user unit)
 scripts/        benchmark.sh, setup-ydotool.sh
 packaging/aur/  PKGBUILD (whispy) + whispy-git/PKGBUILD
 ui/quickshell/  Quickshell pill overlay (reads state.json)
+ui/omarchy/     Omarchy 4 bar module (reads state.json) + its QML tests
 docs/           spike, benchmark, hyprland setup
 ```
 
