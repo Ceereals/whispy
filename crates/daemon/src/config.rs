@@ -303,6 +303,15 @@ impl Config {
             }
         }
 
+        // The clip goes to whisper as a WAV that is always labeled 16 kHz mono
+        // (whisper's native input); any other capture format would be misread.
+        if self.audio.rate != 16000 || self.audio.channels != 1 {
+            return Err(format!(
+                "audio.rate must be 16000 and audio.channels 1 (whisper's input format), got {} Hz / {} ch",
+                self.audio.rate, self.audio.channels
+            ));
+        }
+
         match self.injection.mode.as_str() {
             "paste" => {
                 if self.injection.paste_keys.trim().is_empty() {
@@ -510,6 +519,14 @@ mod tests {
 
     #[test]
     fn validate_rejects_bad_fields() {
+        let (mut cfg, _g) = valid_config();
+        cfg.audio.rate = 48000;
+        assert!(cfg.validate().is_err());
+
+        let (mut cfg, _g) = valid_config();
+        cfg.audio.channels = 2;
+        assert!(cfg.validate().is_err());
+
         let (mut cfg, _g) = valid_config();
         cfg.injection.mode = "nope".into();
         assert!(cfg.validate().is_err());
