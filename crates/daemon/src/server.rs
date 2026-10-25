@@ -46,7 +46,7 @@ pub fn serve(socket_path: &Path, app: Arc<App>, shutdown: Arc<AtomicBool>) -> st
                     warn!(error = %e, "connection error");
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
                 std::thread::sleep(POLL_INTERVAL);
             }
             Err(e) => warn!(error = %e, "accept error"),

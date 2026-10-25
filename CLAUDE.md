@@ -151,6 +151,15 @@ binaries (not whisper-server/model), publish a GitHub release, and push to the A
   `ydotool`, `wtype`, `whisper-server`. Short-lived runtime calls go through `proc` with a
   timeout, never a bare `.output()`/`.status()`. Best-effort steps log via `tracing::warn!` and
   continue; only the critical step is a hard error.
+- **Lints** are configured once in `[workspace.lints]` (root `Cargo.toml`; each crate
+  opts in with `[lints] workspace = true`) and tuned in `clippy.toml`. Clippy
+  `pedantic` is on plus anti-slop restriction lints (`unwrap_used`, `dbg_macro`,
+  `todo`, `map_err_ignore`, `undocumented_unsafe_blocks`, `allow_attributes`, …) and
+  rustc's `missing_docs`. CI denies every warning. Fix the code; when a lint is
+  genuinely wrong for one site, silence just that site with
+  `#[expect(clippy::name, reason = "...")]` — never a bare `#[allow]`, and don't
+  loosen the workspace table to dodge a single hit. `unsafe` blocks need a
+  `// SAFETY:` comment. Tests may `unwrap`/`expect`/`panic` freely.
 - Commit messages follow Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`,
   `style:`, `ci:`, optional scope like `fix(ci):`).
 

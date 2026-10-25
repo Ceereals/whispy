@@ -30,9 +30,9 @@ impl Backend {
     /// before we get here, so this falls back to [`Backend::Auto`] defensively.
     pub fn parse(s: &str) -> Self {
         match s {
-            "wayland" => Backend::Wayland,
-            "x11" => Backend::X11,
-            _ => Backend::Auto,
+            "wayland" => Self::Wayland,
+            "x11" => Self::X11,
+            _ => Self::Auto,
         }
     }
 }
@@ -40,7 +40,7 @@ impl Backend {
 /// Resolve the display server from the override and the (already-read) env values.
 ///
 /// `Auto` precedence: `WAYLAND_DISPLAY` wins (a Wayland session also exports
-/// `DISPLAY` for XWayland clients, so Wayland-first is correct), then `DISPLAY`.
+/// `DISPLAY` for `XWayland` clients, so Wayland-first is correct), then `DISPLAY`.
 /// Returns `None` when nothing is set, so the caller can warn and pick a default.
 pub fn resolve(
     over: Backend,

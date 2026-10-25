@@ -22,6 +22,10 @@ use crate::config::{self, Config};
 use crate::display::{self, Backend, DisplayServer};
 
 #[derive(clap::Args, Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent clap --flags, not a state machine"
+)]
 pub struct SetupArgs {
     /// Run a single step instead of the full bootstrap.
     #[command(subcommand)]
@@ -160,7 +164,7 @@ fn doctor(cfg: &Config) {
     // back to desktop notifications, so flag that here instead of implying a gap.
     match server {
         DisplayServer::Wayland => {
-            println!("  pill overlay: Quickshell (layer-shell); install with `setup --quickshell`")
+            println!("  pill overlay: Quickshell (layer-shell); install with `setup --quickshell`");
         }
         DisplayServer::X11 => println!(
             "  pill overlay: layer-shell only — not available on X11; \
@@ -271,7 +275,9 @@ fn build_whisper(cfg: &Config) -> Result<(), String> {
         .map(Path::to_path_buf)
         .ok_or_else(|| format!("cannot derive source dir from {}", build_dir.display()))?;
 
-    if !repo.join("CMakeLists.txt").exists() {
+    if repo.join("CMakeLists.txt").exists() {
+        println!("  using existing source at {}", repo.display());
+    } else {
         if let Some(parent) = repo.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
@@ -282,8 +288,6 @@ fn build_whisper(cfg: &Config) -> Result<(), String> {
             "https://github.com/ggml-org/whisper.cpp",
             &repo.to_string_lossy(),
         ]))?;
-    } else {
-        println!("  using existing source at {}", repo.display());
     }
 
     // Base configure args, then backend-specific GGML flags.
@@ -401,7 +405,7 @@ fn setup_ydotool() -> Result<(), String> {
     if !have("ydotool") {
         println!("  note: ydotool is not installed yet — install it, then re-run this step.");
     }
-    let user = std::env::var("USER").map_err(|_| "USER not set".to_string())?;
+    let user = std::env::var("USER").map_err(|e| format!("USER: {e}"))?;
     const RULE_PATH: &str = "/etc/udev/rules.d/80-uinput.rules";
     const RULE: &str =
         r#"KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput""#;
@@ -496,8 +500,7 @@ fn install_user_unit(name: &str, contents: &str) -> Result<(), String> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        .is_ok_and(|s| s.success());
 
     if known {
         println!("  using the {name} unit already known to systemd");
@@ -750,9 +753,7 @@ fn daemon_responds(cfg: &Config) -> bool {
     if BufReader::new(&stream).read_line(&mut line).is_err() {
         return false;
     }
-    serde_json::from_str::<whispy_common::Resp>(line.trim())
-        .map(|r| r.ok)
-        .unwrap_or(false)
+    serde_json::from_str::<whispy_common::Resp>(line.trim()).is_ok_and(|r| r.ok)
 }
 
 /// Is the `ydotoold` user service active?
@@ -760,8 +761,7 @@ fn ydotoold_active() -> bool {
     Command::new("systemctl")
         .args(["--user", "is-active", "--quiet", "ydotoold.service"])
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 /// Can we open a TCP connection to `host:port` (i.e. whisper-server is listening)?
@@ -777,7 +777,7 @@ fn port_open(host: &str, port: u16) -> bool {
 
 /// Run a command, streaming its output to the terminal; error on non-zero exit.
 fn exec(cmd: &mut Command) -> Result<(), String> {
-    let name = format!("{:?}", cmd.get_program());
+    let name = cmd.get_program().display().to_string();
     let status = cmd
         .status()
         .map_err(|e| format!("failed to run {name}: {e}"))?;
@@ -796,8 +796,7 @@ pub(crate) fn have(cmd: &str) -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 /// Resolve the configured `stt.backend` to a concrete backend for the build:
@@ -824,7 +823,7 @@ fn has_vulkan() -> bool {
 }
 
 /// Is a shared library matching `needle` registered with the dynamic linker?
-/// Used to decide which whisper.cpp backend (Vulkan, OpenBLAS) the host can build.
+/// Used to decide which whisper.cpp backend (Vulkan, `OpenBLAS`) the host can build.
 fn has_lib(needle: &str) -> bool {
     Command::new("sh")
         .arg("-c")
@@ -832,8 +831,7 @@ fn has_lib(needle: &str) -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 fn print_next_steps(server: DisplayServer) {
@@ -888,10 +886,10 @@ impl HyprConfig {
     /// Pick the flavor from the two probed facts (pure, for tests).
     fn pick(omarchy: bool, lua: bool) -> Self {
         match (omarchy, lua) {
-            (true, true) => HyprConfig::OmarchyLua,
-            (true, false) => HyprConfig::OmarchyConf,
-            (false, true) => HyprConfig::Lua,
-            (false, false) => HyprConfig::Conf,
+            (true, true) => Self::OmarchyLua,
+            (true, false) => Self::OmarchyConf,
+            (false, true) => Self::Lua,
+            (false, false) => Self::Conf,
         }
     }
 
@@ -903,16 +901,16 @@ impl HyprConfig {
             || Path::new("/usr/share/omarchy").is_dir()
             || config::expand("~/.local/share/omarchy").is_dir();
         let lua = config_home().join("hypr/hyprland.lua").is_file();
-        HyprConfig::pick(omarchy, lua)
+        Self::pick(omarchy, lua)
     }
 
     /// Where the binds go, as a heading for the printed snippet.
     fn label(self) -> &'static str {
         match self {
-            HyprConfig::OmarchyLua => "Omarchy 4 (~/.config/hypr/bindings.lua)",
-            HyprConfig::OmarchyConf => "Omarchy 3 (~/.config/hypr/bindings.conf)",
-            HyprConfig::Lua => "Hyprland Lua config (~/.config/hypr/hyprland.lua)",
-            HyprConfig::Conf => "Hyprland (~/.config/hypr/hyprland.conf)",
+            Self::OmarchyLua => "Omarchy 4 (~/.config/hypr/bindings.lua)",
+            Self::OmarchyConf => "Omarchy 3 (~/.config/hypr/bindings.conf)",
+            Self::Lua => "Hyprland Lua config (~/.config/hypr/hyprland.lua)",
+            Self::Conf => "Hyprland (~/.config/hypr/hyprland.conf)",
         }
     }
 }

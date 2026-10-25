@@ -224,7 +224,7 @@ fn hyprctl_class() -> Option<String> {
 }
 
 /// Sway / wlroots: focused node's `app_id` (Wayland-native) or
-/// `window_properties.class` (XWayland) from `swaymsg -t get_tree`.
+/// `window_properties.class` (`XWayland`) from `swaymsg -t get_tree`.
 fn swaymsg_class() -> Option<String> {
     let out = proc::output(
         Command::new("swaymsg").args(["-t", "get_tree"]),
@@ -250,7 +250,7 @@ fn swaymsg_class() -> Option<String> {
 
 /// Depth-first search for the `focused: true` node in a sway tree.
 fn focused_node(node: &serde_json::Value) -> Option<&serde_json::Value> {
-    if node.get("focused").and_then(|v| v.as_bool()) == Some(true) {
+    if node.get("focused").and_then(serde_json::Value::as_bool) == Some(true) {
         return Some(node);
     }
     for key in ["nodes", "floating_nodes"] {

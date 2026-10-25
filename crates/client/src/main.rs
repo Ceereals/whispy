@@ -18,6 +18,10 @@ use whispy_common::{Cmd, Resp, State};
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Parser, Debug)]
+#[expect(
+    clippy::doc_markdown,
+    reason = "doc comments double as plain-text --help, so no backticks"
+)]
 #[command(
     name = "whispy-client",
     version,
@@ -89,7 +93,7 @@ fn toggle(socket: &Path, workflow: Option<String>) -> std::io::Result<Resp> {
     let status = send(socket, Cmd::Status)?;
     let active = matches!(
         status.snapshot.as_ref().map(|s| s.state),
-        Some(State::Recording) | Some(State::Transcribing)
+        Some(State::Recording | State::Transcribing)
     );
     send(
         socket,
@@ -120,8 +124,7 @@ fn send(socket: &Path, cmd: Cmd) -> std::io::Result<Resp> {
 
 fn default_socket() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from)
         .join("whispy")
         .join("whispy.sock")
 }

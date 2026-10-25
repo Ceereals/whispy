@@ -1,0 +1,13 @@
+# Clippy configuration. Lint levels live in `[workspace.lints]` in Cargo.toml;
+# this file only tunes lint behavior. MSRV is read from `rust-version`.
+
+# Tests may unwrap/expect/panic/print freely: a failure there is the point.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-print-in-tests = true
+allow-indexing-slicing-in-tests = true
+
+# Proper nouns that `doc_markdown` should not demand backticks around.
+# ".." keeps clippy's built-in list.
+doc-valid-idents = ["PipeWire", "XWayland", "OpenBLAS", "Quickshell", ".."]
