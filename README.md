@@ -157,9 +157,10 @@ reason, so you can see whether `fuzzy_ratio` / confidence bounds are too aggress
 - PipeWire (`pw-record`), `libnotify`, `ydotool` (paste mode — works on both Wayland and X11)
 - **Wayland**: `wl-clipboard` (paste mode) and/or `wtype` (type mode)
 - **X11/Xorg** (e.g. XFCE, i3, Cinnamon, GNOME-on-Xorg): `xdotool` + `xclip` **or** `xsel`
-- For the Vulkan backend: a Vulkan-capable GPU (developed on RX 9070 XT / RDNA4) + `vulkan-icd-loader`,
-  and to build it: `glslc` (Arch: `shaderc`), `vulkan-headers`, `spirv-headers`. Not needed for the CPU backend.
-  The AUR package pulls all of these in; `setup` names any that are missing before it starts the build.
+- Optional GPU acceleration (Vulkan; AMD, Intel or NVIDIA): a Vulkan-capable GPU and its driver
+  (developed on RX 9070 XT / RDNA4), `vulkan-icd-loader`, and to build it `glslc` (Arch: `shaderc`),
+  `vulkan-headers` and `spirv-headers`. Without them `setup` builds the CPU backend and lists what's
+  missing; on the AUR they're optional dependencies.
 - Build tools for `setup whisper`: `git`, `cmake`, a C/C++ compiler
 - Optional: `openblas` for ~3-4× faster CPU inference; [Quickshell](https://quickshell.org) (Qt 6.5+) for the pill overlay (Wayland layer-shell only)
 
@@ -186,10 +187,10 @@ Dictation runs everywhere; only the on-screen pill is Hyprland/layer-shell speci
   on GNOME/KDE-Wayland (no universal protocol) it's skipped. Manual `--workflow NAME` works everywhere.
 
 > **Platform notes.** `setup whisper` builds whisper.cpp with the backend `stt.backend` selects:
-> `auto` (default) builds Vulkan when its loader is present, else a CPU build (OpenBLAS-accelerated
-> when `libopenblas` is installed) — so GPU-less machines work out of the box. Force it with
-> `stt.backend = "vulkan"` or `"cpu"`. NVIDIA (CUDA) users should build whisper.cpp themselves and
-> point `stt.server_bin` at it.
+> `auto` (default) builds Vulkan when the loader and the Vulkan build tools are installed, else a CPU
+> build (OpenBLAS-accelerated when `libopenblas` is installed), so GPU-less machines work out of the
+> box. Force it with `stt.backend = "vulkan"` or `"cpu"`. Vulkan runs on AMD, Intel and NVIDIA; to use
+> CUDA instead, build whisper.cpp yourself and point `stt.server_bin` at it.
 
 <details>
 <summary><b>Project layout</b></summary>
