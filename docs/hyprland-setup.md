@@ -1,19 +1,21 @@
 # Hyprland Setup
 
-End-to-end setup for whispy on Hyprland.
+End-to-end setup for whispy on Hyprland, including [Omarchy](https://omarchy.org).
 
 ## Quick start
 
 After installing the binaries (AUR, `./install.sh`, or `cargo build`), one command
 does everything below — build whisper.cpp (Vulkan or CPU, per `stt.backend`), download the model, grant
-ydotool access, seed the config, and enable the service:
+ydotool access, seed the config, and enable the services:
 
 ```sh
 whispy-daemon setup --quickshell
 ```
 
-Then add the [keybinds](#5-keybinds) it prints. The sections below document each
-step for when you want to do it by hand or debug a failure.
+Then add the [keybinds](#5-keybinds) it prints (reprint them any time with
+`whispy-daemon setup keybinds`). On Omarchy, see [Omarchy](#omarchy) for the
+specifics. The sections below document each step for when you want to do it by
+hand or debug a failure.
 
 ## 1. Prerequisites
 
@@ -36,10 +38,12 @@ Injection pastes via `ydotool` (Ctrl+V). Grant uinput access and run the daemon:
 
 ```sh
 ./scripts/setup-ydotool.sh        # udev rule + input group (log out/in after)
-systemctl --user enable --now ydotool   # or run ydotoold from Hyprland autostart
+whispy-daemon setup systemd       # installs + enables the ydotoold user unit
 ```
 
 `ydotool` needs `ydotoold` running and `/dev/uinput` accessible — see the script output.
+To skip ydotool entirely, set `injection.mode = "type"` in `~/.config/whispy/config.toml`:
+text is typed with `wtype` instead (no uinput, no clipboard).
 
 ## 4. Run the daemon
 
@@ -55,21 +59,102 @@ after boot is fast.
 
 ## 5. Keybinds
 
-Push-to-talk (primary): distinct press/release events.
+The default keys are the ones Omarchy reserves for dictation, and they're free on
+a plain Hyprland too:
 
-```
-bindd = SUPER, Space, Start dictation, exec, whispy-client start
-bindr = SUPER, Space, Stop dictation, exec, whispy-client stop
-bind  = SUPER SHIFT, Space, Cancel dictation, exec, whispy-client cancel
+| Keys | Action |
+|------|--------|
+| **F9** (hold) | push-to-talk: record while held, transcribe on release |
+| **SUPER+CTRL+X** | toggle: press to start, press again to stop |
+| **SUPER+CTRL+SHIFT+X** | cancel the current recording (nothing is typed) |
+
+Hyprland now reads a Lua config (`~/.config/hypr/hyprland.lua`) in place of the
+classic hyprlang `hyprland.conf`; use the block that matches the file you have.
+`whispy-daemon setup keybinds` detects it and prints the right one.
+
+**Lua config** (`~/.config/hypr/hyprland.lua`):
+
+```lua
+hl.bind("SUPER + CTRL + X", hl.dsp.exec_cmd("whispy-client toggle"), { description = "Toggle dictation" })
+hl.bind("F9", hl.dsp.exec_cmd("whispy-client start"), { description = "Start dictation" })
+hl.bind("F9", hl.dsp.exec_cmd("whispy-client stop"), { description = "Stop dictation", release = true })
+hl.bind("SUPER + CTRL + SHIFT + X", hl.dsp.exec_cmd("whispy-client cancel"), { description = "Cancel dictation" })
 ```
 
-Measure the release latency early; if `bindr` lags > ~100 ms, fall back to a toggle:
+**hyprlang config** (`~/.config/hypr/hyprland.conf`):
 
-```
-bind = SUPER, Space, Toggle dictation, exec, whispy-client toggle
+```ini
+bindd = SUPER CTRL, X, Toggle dictation, exec, whispy-client toggle
+bindd = , F9, Start dictation, exec, whispy-client start
+bindr = , F9, exec, whispy-client stop
+bindd = SUPER CTRL SHIFT, X, Cancel dictation, exec, whispy-client cancel
 ```
 
-Cancel-while-recording with Escape is a Step 8 nicety (submap or conditional bind).
+Validate after saving with `hyprctl reload && hyprctl configerrors`.
+
+Don't bind a bare `Escape` to cancel: a non-transparent Hyprland bind swallows the
+key, so Escape would stop reaching every app.
+
+If the release bind lags (measure it early — > ~100 ms is noticeable), drop the
+push-to-talk pair and keep just the toggle.
+
+## Omarchy
+
+whispy runs on [Omarchy](https://omarchy.org) 4 out of the box; the only things
+that differ from a plain Hyprland are where the binds go and which keys are taken.
+
+**Install.** Omarchy ships `yay`, so the AUR package is one command:
+
+```sh
+yay -S whispy
+whispy-daemon setup
+```
+
+**Keybinds.** Omarchy 4 configures Hyprland in Lua and loads
+`~/.config/hypr/bindings.lua` after its defaults. Add:
+
+```lua
+-- Omarchy binds these to its own Voxtype dictation when Voxtype is installed;
+-- unbind first so whispy is the only thing on the keys.
+hl.unbind("SUPER + CTRL + X")
+hl.unbind("F9")
+o.bind("SUPER + CTRL + X", "Toggle dictation", "whispy-client toggle")
+o.bind("F9", "Start dictation (push-to-talk)", "whispy-client start")
+o.bind("F9", "Stop dictation (push-to-talk)", "whispy-client stop", { release = true })
+o.bind("SUPER + CTRL + SHIFT + X", "Cancel dictation", "whispy-client cancel")
+```
+
+Hyprland reloads on save; check with `hyprctl configerrors`. The descriptions show
+up in Omarchy's keybindings menu (`omarchy menu keybindings --print`).
+
+> **Don't use SUPER+SPACE.** Omarchy 4 binds SUPER+SPACE (Omarchy menu),
+> SUPER+ALT+SPACE (apps), SUPER+SHIFT+SPACE (top bar) and SUPER+CTRL+SPACE
+> (backgrounds). Older whispy docs suggested those keys; move existing binds to the
+> ones above.
+
+On Omarchy 3.x (hyprlang config) the same binds go in `~/.config/hypr/bindings.conf`:
+
+```ini
+unbind = SUPER CTRL, X
+unbind = , F9
+bindd  = SUPER CTRL, X, Toggle dictation, exec, whispy-client toggle
+bindd  = , F9, Start dictation, exec, whispy-client start
+bindr  = , F9, exec, whispy-client stop
+bindd  = SUPER CTRL SHIFT, X, Cancel dictation, exec, whispy-client cancel
+```
+
+**Voxtype.** If you enabled Omarchy's built-in dictation, the unbinds above are
+enough for whispy to take over the keys, but Voxtype still keeps its own model
+loaded. Remove it to free the memory: `omarchy-voxtype-remove`.
+
+**Status UI.** The dictation icon in Omarchy's top bar follows Voxtype only. whispy
+shows its own pill instead: `setup` runs it as the `whispy-pill` user service, a
+separate Quickshell instance that doesn't touch `omarchy-shell`. It sits at the
+bottom of the screen, clear of the bar.
+
+**Injection.** Omarchy ships `wl-clipboard` and `wtype` but not `ydotool` (the AUR
+package pulls it in). If you'd rather skip the uinput/`input`-group step, set
+`injection.mode = "type"` to type through `wtype`, which works with no extra setup.
 
 ## 6. Pill UI
 
@@ -80,6 +165,9 @@ The Quickshell pill lives in `ui/quickshell/` and watches
 
 - `whispy-client` errors with connection refused → the daemon isn't running.
 - Nothing pastes → check `ydotoold` is running and uinput perms (step 3).
+- A bind does nothing → `hyprctl configerrors` for syntax errors, then
+  `hyprctl binds | grep -B2 -A4 whispy` to confirm it registered and that nothing
+  else is on the same key.
 - Transcripts look wrong / clip quiet tails → raise `[audio].gain` in config; the
   daemon also peak-normalizes each clip. See `docs/stt-benchmark.md`.
 - Inspect rejected transcriptions in `~/.local/state/whispy/transcripts.jsonl`.
