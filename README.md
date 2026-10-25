@@ -157,7 +157,9 @@ reason, so you can see whether `fuzzy_ratio` / confidence bounds are too aggress
 - PipeWire (`pw-record`), `libnotify`, `ydotool` (paste mode — works on both Wayland and X11)
 - **Wayland**: `wl-clipboard` (paste mode) and/or `wtype` (type mode)
 - **X11/Xorg** (e.g. XFCE, i3, Cinnamon, GNOME-on-Xorg): `xdotool` + `xclip` **or** `xsel`
-- For the Vulkan backend: a Vulkan-capable GPU (developed on RX 9070 XT / RDNA4) + `vulkan-icd-loader`. Not needed for the CPU backend.
+- For the Vulkan backend: a Vulkan-capable GPU (developed on RX 9070 XT / RDNA4) + `vulkan-icd-loader`,
+  and to build it: `glslc` (Arch: `shaderc`), `vulkan-headers`, `spirv-headers`. Not needed for the CPU backend.
+  The AUR package pulls all of these in; `setup` names any that are missing before it starts the build.
 - Build tools for `setup whisper`: `git`, `cmake`, a C/C++ compiler
 - Optional: `openblas` for ~3-4× faster CPU inference; [Quickshell](https://quickshell.org) (Qt 6.5+) for the pill overlay (Wayland layer-shell only)
 

@@ -187,6 +187,15 @@ fn doctor(cfg: &Config) {
         "Vulkan GPU backend (backend = vulkan/auto)",
         has_vulkan(),
     );
+    let missing = missing_vulkan_build_deps(have, header_installed);
+    // cmake is already listed under "build" above.
+    for dep in VULKAN_BUILD_DEPS.iter().filter(|d| d.package != "cmake") {
+        report(
+            dep.package,
+            &format!("{} (Vulkan build)", dep.what),
+            !missing.iter().any(|m| m.package == dep.package),
+        );
+    }
     report(
         "libopenblas",
         "faster CPU inference (optional, backend = cpu)",
@@ -196,7 +205,7 @@ fn doctor(cfg: &Config) {
 
 fn report(name: &str, note: &str, ok: bool) {
     let mark = if ok { "✓" } else { "✗" };
-    println!("    [{mark}] {name:<12} {note}");
+    println!("    [{mark}] {name:<14} {note}");
 }
 
 /// A human label for the resolved display server.
@@ -262,6 +271,22 @@ fn build_whisper(cfg: &Config) -> Result<(), String> {
              Or set `stt.backend = \"cpu\"` in config.toml to build a CPU-only whisper-server instead."
             .to_string(),
         );
+    }
+    // The Vulkan build also needs a shader compiler and two header sets; without
+    // them cmake fails deep in ggml's configure. Name the packages up front.
+    if backend == "vulkan" {
+        let missing = missing_vulkan_build_deps(have, header_installed);
+        if !missing.is_empty() {
+            let packages: Vec<&str> = missing.iter().map(|d| d.package).collect();
+            let what: Vec<&str> = missing.iter().map(|d| d.what).collect();
+            return Err(format!(
+                "the Vulkan whisper.cpp build is missing: {}.\n  \
+                 Install them (Arch: `sudo pacman -S --needed {}`), then re-run.\n  \
+                 Or set `stt.backend = \"cpu\"` in config.toml to build a CPU-only whisper-server instead.",
+                what.join(", "),
+                packages.join(" ")
+            ));
+        }
     }
 
     // Default layout: <root>/build/bin/whisper-server. Derive <root> and <build>.
@@ -822,6 +847,71 @@ fn has_vulkan() -> bool {
     has_lib("libvulkan")
 }
 
+/// A build-time dependency of whisper.cpp's Vulkan backend, named by its Arch
+/// package (the AUR package depends on all of them).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BuildDep {
+    package: &'static str,
+    what: &'static str,
+    probe: Probe,
+}
+
+/// How to tell whether a [`BuildDep`] is installed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Probe {
+    /// A command on PATH.
+    Command(&'static str),
+    /// A header under a system include dir.
+    Header(&'static str),
+}
+
+/// What `ggml`'s Vulkan `CMake` requires: `find_package(Vulkan COMPONENTS glslc)`
+/// and `find_package(SPIRV-Headers CONFIG)`, plus cmake itself.
+const VULKAN_BUILD_DEPS: [BuildDep; 4] = [
+    BuildDep {
+        package: "cmake",
+        what: "cmake",
+        probe: Probe::Command("cmake"),
+    },
+    BuildDep {
+        package: "shaderc",
+        what: "the glslc shader compiler",
+        probe: Probe::Command("glslc"),
+    },
+    BuildDep {
+        package: "vulkan-headers",
+        what: "Vulkan headers",
+        probe: Probe::Header("vulkan/vulkan.h"),
+    },
+    BuildDep {
+        package: "spirv-headers",
+        what: "SPIR-V headers",
+        probe: Probe::Header("spirv/unified1/spirv.hpp"),
+    },
+];
+
+/// The Vulkan build deps that are missing, given probes for commands and headers.
+/// Pure (probes injected) so the decision is unit-testable.
+fn missing_vulkan_build_deps(
+    has_command: impl Fn(&str) -> bool,
+    has_header: impl Fn(&str) -> bool,
+) -> Vec<BuildDep> {
+    VULKAN_BUILD_DEPS
+        .into_iter()
+        .filter(|dep| match dep.probe {
+            Probe::Command(cmd) => !has_command(cmd),
+            Probe::Header(header) => !has_header(header),
+        })
+        .collect()
+}
+
+/// Is `header` installed under a system include dir?
+fn header_installed(header: &str) -> bool {
+    ["/usr/include", "/usr/local/include"]
+        .iter()
+        .any(|dir| Path::new(dir).join(header).is_file())
+}
+
 /// Is a shared library matching `needle` registered with the dynamic linker?
 /// Used to decide which whisper.cpp backend (Vulkan, `OpenBLAS`) the host can build.
 fn has_lib(needle: &str) -> bool {
@@ -1075,6 +1165,28 @@ mod tests {
             omarchy_widget_dir().file_name().and_then(|n| n.to_str()),
             Some(OMARCHY_WIDGET_ID)
         );
+    }
+
+    #[test]
+    fn missing_vulkan_build_deps_names_only_what_is_absent() {
+        let all = missing_vulkan_build_deps(|_| false, |_| false);
+        let packages: Vec<&str> = all.iter().map(|d| d.package).collect();
+        assert_eq!(
+            packages,
+            ["cmake", "shaderc", "vulkan-headers", "spirv-headers"]
+        );
+
+        assert_eq!(missing_vulkan_build_deps(|_| true, |_| true), []);
+
+        // The case from the AUR report: tools present, both header sets absent.
+        let headers_only = missing_vulkan_build_deps(|_| true, |_| false);
+        let packages: Vec<&str> = headers_only.iter().map(|d| d.package).collect();
+        assert_eq!(packages, ["vulkan-headers", "spirv-headers"]);
+
+        // glslc is probed as a command, not a library.
+        let no_glslc = missing_vulkan_build_deps(|cmd| cmd != "glslc", |_| true);
+        assert_eq!(no_glslc.len(), 1);
+        assert_eq!(no_glslc[0].package, "shaderc");
     }
 
     #[test]
