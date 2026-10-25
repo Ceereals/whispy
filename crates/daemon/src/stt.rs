@@ -50,9 +50,9 @@ pub enum SttError {
 impl fmt::Display for SttError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SttError::Http(msg) => write!(f, "whisper-server HTTP error: {msg}"),
-            SttError::Parse(msg) => write!(f, "failed to parse whisper-server response: {msg}"),
-            SttError::Audio(msg) => write!(f, "failed to encode audio: {msg}"),
+            Self::Http(msg) => write!(f, "whisper-server HTTP error: {msg}"),
+            Self::Parse(msg) => write!(f, "failed to parse whisper-server response: {msg}"),
+            Self::Audio(msg) => write!(f, "failed to encode audio: {msg}"),
         }
     }
 }
@@ -247,6 +247,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "aggregate() returns the literal 0.0 when there are no segments"
+    )]
     fn aggregates_empty_segments_to_zero() {
         let resp = Response {
             text: "  hello world  ".to_string(),
@@ -332,7 +336,7 @@ mod tests {
         std::thread::spawn(move || {
             let (mut conn, _) = listener.accept().expect("accept");
             // Drain the request (headers + multipart body) before answering.
-            let mut buf = [0u8; 64 * 1024];
+            let mut buf = vec![0u8; 64 * 1024];
             let _ = conn.set_read_timeout(Some(Duration::from_millis(200)));
             while matches!(conn.read(&mut buf), Ok(n) if n > 0) {}
             let _ = conn.write_all(head.as_bytes());

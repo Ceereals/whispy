@@ -47,14 +47,19 @@ pub fn summarize(lines: impl Iterator<Item = String>) -> Summary {
         s.total += 1;
         if rec.accepted {
             s.accepted += 1;
-            logprob_sum += rec.avg_logprob as f64;
+            logprob_sum += f64::from(rec.avg_logprob);
         } else {
             let reason = rec.drop_reason.unwrap_or_else(|| "unknown".to_string());
             *s.dropped.entry(reason).or_insert(0) += 1;
         }
     }
     if s.accepted > 0 {
-        s.mean_accepted_logprob = (logprob_sum / s.accepted as f64) as f32;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "mean log-prob is a small negative number; f32 is plenty"
+        )]
+        let mean = (logprob_sum / s.accepted as f64) as f32;
+        s.mean_accepted_logprob = mean;
     }
     s
 }
@@ -108,7 +113,7 @@ mod tests {
     use super::*;
 
     fn lines(raw: &[&str]) -> Summary {
-        summarize(raw.iter().map(|s| s.to_string()))
+        summarize(raw.iter().map(ToString::to_string))
     }
 
     #[test]

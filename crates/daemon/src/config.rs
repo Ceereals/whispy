@@ -102,22 +102,31 @@ fn default_silence_rms_threshold() -> f32 {
 
 impl Audio {
     /// Total samples at which capture auto-stops (`error: too_long`).
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "float-to-int `as` saturates (negative -> 0), which is the intended clamp"
+    )]
     pub fn max_samples(&self) -> usize {
-        (self.rate as f64 * self.max_clip_secs) as usize
+        (f64::from(self.rate) * self.max_clip_secs) as usize
     }
 
     /// Below this sample count a clip is discarded silently.
     pub fn min_samples(&self) -> usize {
-        (self.rate as u64 * self.min_clip_ms / 1000) as usize
+        (u64::from(self.rate) * self.min_clip_ms / 1000) as usize
     }
 
     /// Number of samples per RMS reporting window.
     pub fn rms_window(&self) -> usize {
-        ((self.rate as u64 * self.rms_interval_ms / 1000) as usize).max(1)
+        ((u64::from(self.rate) * self.rms_interval_ms / 1000) as usize).max(1)
     }
 
     /// Consecutive silent RMS windows that trigger the trailing-silence auto-stop,
     /// or `None` when the feature is disabled (`silence_timeout_ms == 0`).
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Linux targets are 64-bit; window counts fit usize"
+    )]
     pub fn silence_windows(&self) -> Option<usize> {
         if self.silence_timeout_ms == 0 {
             return None;
@@ -141,7 +150,7 @@ pub struct Injection {
     /// "type"  = wtype/xdotool types the transcript directly (works in terminals too).
     #[serde(default = "default_mode")]
     pub mode: String,
-    /// Display server / injection backend: "auto" (detect via WAYLAND_DISPLAY/DISPLAY),
+    /// Display server / injection backend: "auto" (detect via `WAYLAND_DISPLAY`/`DISPLAY`),
     /// "wayland" (wl-copy/wl-paste/wtype), or "x11" (xclip/xsel/xdotool). ydotool
     /// delivers the paste keystroke on both.
     #[serde(default = "default_inject_backend")]
@@ -407,9 +416,7 @@ pub fn user_config_path() -> Option<PathBuf> {
 }
 
 fn runtime_dir() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
+    std::env::var_os("XDG_RUNTIME_DIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from)
 }
 
 /// `$XDG_STATE_HOME/whispy` (default `~/.local/state/whispy`): logs and transcripts.

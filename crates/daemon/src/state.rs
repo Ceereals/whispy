@@ -47,8 +47,7 @@ impl StatePublisher {
 pub fn now() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0)
+        .map_or(0.0, |d| d.as_secs_f64())
 }
 
 /// Shared, cloneable handle to the daemon's published state.
@@ -62,7 +61,7 @@ pub struct Status {
     publisher: Arc<StatePublisher>,
     generation: Arc<AtomicU64>,
     /// Minimum gap between `state.json` writes for repeated `recording` RMS ticks.
-    /// `Duration::ZERO` (state_max_hz == 0) disables throttling.
+    /// `Duration::ZERO` (`state_max_hz` == 0) disables throttling.
     min_interval: Duration,
     last_publish: Arc<Mutex<Instant>>,
 }
@@ -76,7 +75,7 @@ impl Status {
         let min_interval = if state_max_hz == 0 {
             Duration::ZERO
         } else {
-            Duration::from_secs_f64(1.0 / state_max_hz as f64)
+            Duration::from_secs_f64(1.0 / f64::from(state_max_hz))
         };
         Self {
             shared,

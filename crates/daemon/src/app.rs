@@ -129,9 +129,8 @@ impl App {
     }
 
     fn stop(self: &Arc<Self>) -> Resp {
-        let cap = match self.capture.lock().expect("capture lock").take() {
-            Some(c) => c,
-            None => return Resp::err("not recording"),
+        let Some(cap) = self.capture.lock().expect("capture lock").take() else {
+            return Resp::err("not recording");
         };
 
         // The max-duration case already reported `too_long` via on_too_long.
@@ -159,9 +158,8 @@ impl App {
     /// was said, mirroring the explicit `stop` path. Runs on its own thread.
     /// A no-op if an explicit stop/cancel already reclaimed the capture.
     fn auto_finish(self: Arc<Self>) {
-        let cap = match self.capture.lock().expect("capture lock").take() {
-            Some(c) => c,
-            None => return,
+        let Some(cap) = self.capture.lock().expect("capture lock").take() else {
+            return;
         };
         match cap.finish(self.cfg.audio.min_samples()) {
             None => self.status.idle(),

@@ -42,6 +42,10 @@ use crate::whisper::WhisperServer;
 const WHISPER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Parser, Debug)]
+#[expect(
+    clippy::doc_markdown,
+    reason = "doc comments double as plain-text --help, so no backticks"
+)]
 #[command(
     name = "whispy-daemon",
     version,
@@ -240,7 +244,7 @@ fn load_blacklist(cfg: &Config) -> Hallucinations {
         match Hallucinations::load(&path) {
             Ok(h) => return h,
             Err(e) => {
-                warn!(error = %e, path = %path.display(), "failed to load hallucinations file; using built-in list")
+                warn!(error = %e, path = %path.display(), "failed to load hallucinations file; using built-in list");
             }
         }
     }
@@ -287,16 +291,15 @@ fn ensure_wayland_display() {
         }
     };
     let names = entries.filter_map(|e| e.ok()?.file_name().into_string().ok());
-    match pick_wayland_socket(names) {
-        Some(socket) => {
-            // Safe: this runs early in startup. The only other live thread is the
-            // log-appender worker, which never reads the environment; the whisper
-            // monitor, state-flash threads, and socket server are all spawned later,
-            // so nothing races this write.
-            unsafe { std::env::set_var("WAYLAND_DISPLAY", &socket) };
-            info!(wayland_display = %socket, "discovered WAYLAND_DISPLAY from $XDG_RUNTIME_DIR");
-        }
-        None => warn!("WAYLAND_DISPLAY unset and no wayland-N socket found; injection may fail"),
+    if let Some(socket) = pick_wayland_socket(names) {
+        // SAFETY: this runs early in startup. The only other live thread is the
+        // log-appender worker, which never reads the environment; the whisper
+        // monitor, state-flash threads, and socket server are all spawned later,
+        // so nothing races this write.
+        unsafe { std::env::set_var("WAYLAND_DISPLAY", &socket) };
+        info!(wayland_display = %socket, "discovered WAYLAND_DISPLAY from $XDG_RUNTIME_DIR");
+    } else {
+        warn!("WAYLAND_DISPLAY unset and no wayland-N socket found; injection may fail");
     }
 }
 
@@ -304,7 +307,7 @@ fn ensure_x_display() {
     if std::env::var_os("DISPLAY").is_some_and(|v| !v.is_empty()) {
         return;
     }
-    // Safe for the same reason as the WAYLAND_DISPLAY write above: only the
+    // SAFETY: same reason as the WAYLAND_DISPLAY write above: only the
     // log-appender worker is live, and it never reads the environment.
     unsafe { std::env::set_var("DISPLAY", ":0") };
     warn!("DISPLAY unset; defaulting to \":0\" (set DISPLAY if your X server uses another)");
@@ -347,7 +350,7 @@ mod tests {
     use super::pick_wayland_socket;
 
     fn pick(names: &[&str]) -> Option<String> {
-        pick_wayland_socket(names.iter().map(|s| s.to_string()))
+        pick_wayland_socket(names.iter().map(ToString::to_string))
     }
 
     #[test]

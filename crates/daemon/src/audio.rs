@@ -1,4 +1,4 @@
-//! PipeWire audio capture via `pw-record` (raw s16le mono), with RMS metering,
+//! `PipeWire` audio capture via `pw-record` (raw s16le mono), with RMS metering,
 //! digital gain, and clip-duration limits.
 //!
 //! `pw-record --format s16 -` streams headerless little-endian PCM to stdout. A
@@ -173,7 +173,7 @@ where
     let mut samples: Vec<i16> = Vec::with_capacity(cfg.rate as usize * 4);
     let window_len = cfg.rms_window();
     let max_samples = cfg.max_samples();
-    let skip_samples = (cfg.rate as u64 * SKIP_MS / 1000) as usize;
+    let skip_samples = (u64::from(cfg.rate) * SKIP_MS / 1000) as usize;
     let gain = cfg.gain;
 
     // Speech-energy bookkeeping. A window above `silence_threshold` counts as
@@ -216,10 +216,14 @@ where
             let sample = apply_gain(i16::from_le_bytes([pair[0], pair[1]]), gain);
             samples.push(sample);
 
-            let norm = sample as f64 / 32768.0;
+            let norm = f64::from(sample) / 32768.0;
             sq_sum += norm * norm;
             window_count += 1;
             if window_count >= window_len {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "RMS of normalized samples lies in [0, 1]; f32 is plenty"
+                )]
                 let rms = ((sq_sum / window_count as f64).sqrt() as f32).clamp(0.0, 1.0);
                 on_rms(rms);
                 sq_sum = 0.0;
@@ -261,11 +265,16 @@ where
 }
 
 /// Apply a linear gain with saturation.
+#[expect(
+    clippy::float_cmp,
+    clippy::cast_possible_truncation,
+    reason = "1.0 is an exact config value meaning 'no gain'; the result is clamped to i16 range before the cast"
+)]
 fn apply_gain(sample: i16, gain: f32) -> i16 {
     if gain == 1.0 {
         return sample;
     }
-    (sample as f32 * gain).round().clamp(-32768.0, 32767.0) as i16
+    (f32::from(sample) * gain).round().clamp(-32768.0, 32767.0) as i16
 }
 
 /// Peak-normalize toward [`NORM_TARGET`]. Only amplifies (quiet clips); never
@@ -273,7 +282,7 @@ fn apply_gain(sample: i16, gain: f32) -> i16 {
 fn normalize_peak(mut buf: Vec<i16>) -> Vec<i16> {
     let peak = buf
         .iter()
-        .map(|s| s.unsigned_abs() as i32)
+        .map(|s| i32::from(s.unsigned_abs()))
         .max()
         .unwrap_or(0);
     if peak <= SILENCE_FLOOR {
@@ -285,7 +294,12 @@ fn normalize_peak(mut buf: Vec<i16>) -> Vec<i16> {
     }
     debug!(peak, factor, "peak-normalizing clip");
     for s in &mut buf {
-        *s = (*s as f32 * factor).round().clamp(-32768.0, 32767.0) as i16;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "clamped to i16 range before the cast"
+        )]
+        let scaled = (f32::from(*s) * factor).round().clamp(-32768.0, 32767.0) as i16;
+        *s = scaled;
     }
     buf
 }
@@ -307,7 +321,7 @@ mod tests {
         let out = normalize_peak(vec![0, 1000, -1000, 500]);
         let peak = out
             .iter()
-            .map(|s| s.unsigned_abs() as i32)
+            .map(|s| i32::from(s.unsigned_abs()))
             .max()
             .unwrap_or(0);
         assert!(peak > 30_000, "quiet clip should be amplified, peak={peak}");

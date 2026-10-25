@@ -91,9 +91,9 @@ pub enum InjectError {
 impl std::fmt::Display for InjectError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            InjectError::Clipboard(msg) => write!(f, "clipboard error: {msg}"),
-            InjectError::Paste(msg) => write!(f, "paste error: {msg}"),
-            InjectError::Type(msg) => write!(f, "type error: {msg}"),
+            Self::Clipboard(msg) => write!(f, "clipboard error: {msg}"),
+            Self::Paste(msg) => write!(f, "paste error: {msg}"),
+            Self::Type(msg) => write!(f, "type error: {msg}"),
         }
     }
 }
@@ -185,12 +185,9 @@ impl Injector {
     ///
     /// Never fails: an unreadable or empty clipboard is reported as [`Saved::Empty`].
     fn save_clipboard(&self) -> Saved {
-        let mime = match self.backend.top_mime_type() {
-            Some(mime) => mime,
-            None => {
-                debug!("clipboard empty or unreadable; nothing to restore");
-                return Saved::Empty;
-            }
+        let Some(mime) = self.backend.top_mime_type() else {
+            debug!("clipboard empty or unreadable; nothing to restore");
+            return Saved::Empty;
         };
 
         if !mime_is_text(&mime) {
@@ -466,8 +463,7 @@ fn have_tool(tool: &str) -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 // --- shared helpers ---------------------------------------------------------
