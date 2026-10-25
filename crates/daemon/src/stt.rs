@@ -50,9 +50,9 @@ pub enum SttError {
 impl fmt::Display for SttError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SttError::Http(msg) => write!(f, "whisper-server HTTP error: {msg}"),
-            SttError::Parse(msg) => write!(f, "failed to parse whisper-server response: {msg}"),
-            SttError::Audio(msg) => write!(f, "failed to encode audio: {msg}"),
+            Self::Http(msg) => write!(f, "whisper-server HTTP error: {msg}"),
+            Self::Parse(msg) => write!(f, "failed to parse whisper-server response: {msg}"),
+            Self::Audio(msg) => write!(f, "failed to encode audio: {msg}"),
         }
     }
 }
@@ -275,8 +275,8 @@ mod tests {
         };
         let t = aggregate(resp);
         assert_eq!(t.text, "hello world");
-        assert_eq!(t.avg_logprob, 0.0);
-        assert_eq!(t.no_speech_prob, 0.0);
+        assert!(t.avg_logprob.abs() < f32::EPSILON);
+        assert!(t.no_speech_prob.abs() < f32::EPSILON);
         assert_eq!(t.language.as_deref(), Some("en"));
     }
 
@@ -352,7 +352,7 @@ mod tests {
         std::thread::spawn(move || {
             let (mut conn, _) = listener.accept().expect("accept");
             // Drain the request (headers + multipart body) before answering.
-            let mut buf = [0u8; 64 * 1024];
+            let mut buf = vec![0u8; 64 * 1024];
             let _ = conn.set_read_timeout(Some(Duration::from_millis(200)));
             while matches!(conn.read(&mut buf), Ok(n) if n > 0) {}
             let _ = conn.write_all(head.as_bytes());

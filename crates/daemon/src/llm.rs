@@ -22,9 +22,9 @@ pub enum LlmError {
 impl fmt::Display for LlmError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LlmError::Disabled => write!(f, "LLM disabled (no model configured)"),
-            LlmError::Http(msg) => write!(f, "LLM HTTP error: {msg}"),
-            LlmError::Parse(msg) => write!(f, "failed to parse LLM response: {msg}"),
+            Self::Disabled => write!(f, "LLM disabled (no model configured)"),
+            Self::Http(msg) => write!(f, "LLM HTTP error: {msg}"),
+            Self::Parse(msg) => write!(f, "failed to parse LLM response: {msg}"),
         }
     }
 }

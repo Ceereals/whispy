@@ -23,3 +23,98 @@ clap = { version = "4", features = ["derive"] }
 toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+# Lints shared by every crate (each opts in with `[lints] workspace = true`).
+# `cargo clippy` picks these up automatically; CI runs it with `-D warnings`, so
+# every `warn` below is a hard failure there. Silence a single site with
+# `#[expect(clippy::lint_name, reason = "why")]`, never a bare `#[allow]`.
+[workspace.lints.rust]
+# Defaults raised: catch dead code, sloppy idioms, and undocumented items early.
+missing_docs = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unused_qualifications = "warn"
+unused_lifetimes = "warn"
+unused_macro_rules = "warn"
+redundant_lifetimes = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unit_bindings = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+# --- Broad groups ---------------------------------------------------------
+# `all` (correctness, suspicious, style, complexity, perf) is on by default;
+# pedantic is the widely-used opt-in group. Priority -1 lets the per-lint
+# levels below override the group.
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+# Pedantic lints that are noise for a binary-only workspace.
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# Audio/stats math converts counts to floats on purpose; precision loss past
+# 2^24 samples is irrelevant there.
+cast_precision_loss = "allow"
+# Owned params mark ownership hand-off (threads, the text pipeline); switching
+# them to borrows is signature churn with no real win.
+needless_pass_by_value = "allow"
+# Function-local helper structs (e.g. serde response shapes) sit next to their
+# single use on purpose.
+items_after_statements = "allow"
+
+# --- Anti-slop: leftovers, placeholders, and shortcuts --------------------
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+unwrap_used = "warn"
+get_unwrap = "warn"
+panic_in_result_fn = "warn"
+exit = "warn"
+mem_forget = "warn"
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+undocumented_unsafe_blocks = "warn"
+multiple_unsafe_ops_per_block = "warn"
+map_err_ignore = "warn"
+assertions_on_result_states = "warn"
+cfg_not_test = "warn"
+try_err = "warn"
+# Needless allocation / conversion churn.
+redundant_clone = "warn"
+clone_on_ref_ptr = "warn"
+string_add = "warn"
+format_push_string = "warn"
+needless_collect = "warn"
+or_fun_call = "warn"
+verbose_file_reads = "warn"
+pathbuf_init_then_push = "warn"
+redundant_type_annotations = "warn"
+iter_on_single_items = "warn"
+iter_on_empty_collections = "warn"
+unnecessary_struct_initialization = "warn"
+# Clutter and copy-paste smells.
+use_self = "warn"
+branches_sharing_code = "warn"
+collection_is_never_read = "warn"
+useless_let_if_seq = "warn"
+empty_drop = "warn"
+empty_structs_with_brackets = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+unneeded_field_pattern = "warn"
+unnecessary_self_imports = "warn"
+same_name_method = "warn"
+renamed_function_params = "warn"
+if_then_some_else_none = "warn"
+needless_raw_strings = "warn"
+lossy_float_literal = "warn"
+infinite_loop = "warn"
+literal_string_with_formatting_args = "warn"
+too_long_first_doc_paragraph = "warn"
+needless_pass_by_ref_mut = "warn"
+trait_duplication_in_bounds = "warn"
+type_repetition_in_bounds = "warn"
+derive_partial_eq_without_eq = "warn"
+equatable_if_let = "warn"

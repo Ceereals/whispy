@@ -14,9 +14,9 @@ fn temp_socket(tag: &str) -> PathBuf {
         "whispy-client-it-{}-{}-{:?}",
         tag,
         std::process::id(),
-        std::thread::current().id()
+        thread::current().id()
     ));
-    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&dir).expect("create temp socket dir");
     dir.join("whispy.sock")
 }
 

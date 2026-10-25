@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 pub enum Cmd {
     /// Begin audio capture. `workflow` optionally names an AI workflow to apply.
     Start {
+        /// Name of a `[workflows.<name>]` entry to run on the transcript.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workflow: Option<String>,
     },
@@ -29,11 +30,16 @@ pub enum Cmd {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum State {
+    /// Waiting for a `start`.
     #[default]
     Idle,
+    /// Capturing audio from the microphone.
     Recording,
+    /// Capture finished; whisper-server is transcribing the clip.
     Transcribing,
+    /// Text was injected (transient flash before reverting to `Idle`).
     Success,
+    /// The last recording failed or was dropped (transient flash).
     Error,
 }
 
@@ -43,10 +49,13 @@ pub enum State {
 /// JSON schema stable for the UI.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StateSnapshot {
+    /// Current lifecycle state.
     pub state: State,
     /// Microphone RMS in `[0.0, 1.0]`, updated while recording.
     pub rms: f32,
+    /// Machine-readable error identifier (e.g. `stt_error`, `too_long`).
     pub error_kind: Option<String>,
+    /// Human-readable error detail for the UI.
     pub error_message: Option<String>,
     /// Unix timestamp (fractional seconds) of this snapshot.
     pub timestamp: f64,
@@ -55,14 +64,18 @@ pub struct StateSnapshot {
 /// A daemon response, e.g. `{"ok":true}` or `{"ok":false,"error":"..."}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Resp {
+    /// Whether the command succeeded.
     pub ok: bool,
+    /// Failure reason; set only when `ok` is false.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// State snapshot; set only in reply to `status`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<StateSnapshot>,
 }
 
 impl Resp {
+    /// A bare success response.
     pub fn ok() -> Self {
         Self {
             ok: true,
@@ -71,6 +84,7 @@ impl Resp {
         }
     }
 
+    /// A success response carrying the current state snapshot.
     pub fn status(snapshot: StateSnapshot) -> Self {
         Self {
             ok: true,
@@ -79,6 +93,7 @@ impl Resp {
         }
     }
 
+    /// A failure response with the given reason.
     pub fn err(message: impl Into<String>) -> Self {
         Self {
             ok: false,

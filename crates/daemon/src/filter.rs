@@ -64,18 +64,18 @@ pub enum DropReason {
 }
 
 impl DropReason {
-    /// Stable snake_case identifier for the state.json `error_kind` field.
-    pub fn kind(&self) -> &'static str {
+    /// Stable `snake_case` identifier for the state.json `error_kind` field.
+    pub fn kind(self) -> &'static str {
         match self {
-            DropReason::LowConfidence => "low_confidence",
-            DropReason::Empty => "empty",
-            DropReason::Hallucination => "hallucination",
+            Self::LowConfidence => "low_confidence",
+            Self::Empty => "empty",
+            Self::Hallucination => "hallucination",
         }
     }
 }
 
 /// Outcome of running the filter on a transcript.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     /// Keep the transcript (trimmed, original case).
     Accept(String),
@@ -161,7 +161,7 @@ mod tests {
         // main falls back to this list (and `expect`s it) when the file is missing.
         let list = Hallucinations::parse(crate::config::default_hallucinations_toml())
             .expect("embedded hallucinations parse");
-        assert!(!list.phrases.is_empty());
+        assert_ne!(list.phrases, Vec::<String>::new());
     }
 
     #[test]
