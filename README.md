@@ -123,8 +123,8 @@ Hyprland keybind ──► whispy-client ──(unix socket)──► whispy-dae
 - **whispy-client** — tiny binary called from Hyprland binds (`start` / `stop` / `cancel` / `toggle`).
 - **whisper-server** — whisper.cpp built with the backend `stt.backend` picks: Vulkan (developed on AMD RDNA4, no ROCm) or CPU (OpenBLAS-accelerated when available).
 - **pill UI** — Quickshell layer overlay reading the state file ([`ui/quickshell/`](ui/quickshell/)).
-- **Omarchy bar module** — the same live state as an icon in Omarchy 4's bar ([`ui/omarchy/`](ui/omarchy/));
-  `setup` installs it on Omarchy, see the [Omarchy notes](docs/hyprland-setup.md#omarchy).
+- **Omarchy bar widget** — the same live state as an Omarchy 4 bar widget plugin ([`ui/omarchy/`](ui/omarchy/));
+  `setup` installs it and puts it on the bar, see the [Omarchy notes](docs/hyprland-setup.md#omarchy).
 
 **Two injection modes** (`injection.mode`):
 
@@ -201,7 +201,7 @@ systemd/        whispy-daemon.service (user unit)
 scripts/        benchmark.sh, setup-ydotool.sh
 packaging/aur/  PKGBUILD (whispy) + whispy-git/PKGBUILD
 ui/quickshell/  Quickshell pill overlay (reads state.json)
-ui/omarchy/     Omarchy 4 bar module (reads state.json) + its QML tests
+ui/omarchy/     Omarchy 4 bar widget plugin (manifest.json + whispy.qml) + its QML tests
 docs/           spike, benchmark, hyprland setup
 ```
 

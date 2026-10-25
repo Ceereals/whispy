@@ -1,17 +1,21 @@
 // whispy dictation indicator for the Omarchy 4 bar.
 //
-// An Omarchy custom QML bar module: `whispy-daemon setup` installs it to
-// ~/.config/omarchy/bar/modules/whispy.qml, and it shows up once
-// `{ "id": "whispy", "type": "qml" }` is added to a section of `bar.layout` in
-// ~/.config/omarchy/shell.json. It watches the same state.json the pill reads (no
-// polling, no extra processes) and drives the daemon through whispy-client.
+// The bar-widget entry point of the `whispy.dictation` Omarchy plugin (see
+// manifest.json). `whispy-daemon setup` installs this folder to
+// ~/.config/omarchy/plugins/whispy.dictation/ and, the first time, puts the
+// widget on the bar. It watches the same state.json the pill reads (no polling,
+// no extra processes) and drives the daemon through whispy-client.
 //
 //   left click          toggle dictation
 //   right/middle click  cancel the current recording
 //
-// Settings (optional, on the same shell.json entry):
+// Settings (Omarchy's widget settings, or the widget's shell.json entry):
 //   "hideWhenIdle": true   only show while recording/transcribing/flashing
 //   "statePath": "..."     override $XDG_RUNTIME_DIR/whispy/state.json
+//
+// The same file also loads as an Omarchy custom QML module
+// ({ "id": "whispy", "type": "qml" } with ~/.config/omarchy/bar/modules/whispy.qml):
+// both get the same injected properties.
 //
 // Uses only QtQuick + Quickshell.Io and the `bar` API Omarchy injects (colors,
 // font, size, run, tooltips, click targets), so it needs nothing beyond what

@@ -36,10 +36,12 @@ Hyprland keybind ──► whispy-client ──(unix socket)──► whispy-dae
   (Vulkan, or CPU/OpenBLAS). Built and managed per-machine by `whispy-daemon setup`;
   **not** shipped in releases.
 - **pill UI** — Quickshell layer overlay that reads `state.json` (`ui/quickshell/`).
-- **Omarchy bar module** — `ui/omarchy/whispy.qml`, an Omarchy 4 custom bar module
-  (also reads `state.json`), embedded in the daemon via `include_str!` and installed by
-  `setup` to `~/.config/omarchy/bar/modules/`. No Python or other new runtime
-  dependencies: UI stays QML on the Quickshell that Omarchy already ships.
+- **Omarchy bar widget** — `ui/omarchy/` is an Omarchy 4 bar-widget plugin
+  (`whispy.dictation`: `manifest.json` + `whispy.qml`, also reading `state.json`),
+  embedded in the daemon via `include_str!`. `setup` installs it to
+  `~/.config/omarchy/plugins/whispy.dictation/` and puts it on the bar only on first
+  install (`omarchy-bar put`). No Python or other new runtime dependencies: UI stays
+  QML on the Quickshell that Omarchy already ships.
 
 ### Recording flow
 
@@ -155,7 +157,7 @@ binaries (not whisper-server/model), publish a GitHub release, and push to the A
 ## Where things live
 
 - `ui/quickshell/` — QML pill overlay (`Pill.qml`, `PillPanel.qml`, `Tokens.qml`); reads `state.json`.
-- `ui/omarchy/` — Omarchy bar module (`whispy.qml`) plus `tests/` (qmltestrunner with
+- `ui/omarchy/` — Omarchy bar widget plugin (`manifest.json`, `whispy.qml`) plus `tests/` (qmltestrunner with
   stub Quickshell modules and a mock `bar`).
 - `systemd/whispy-daemon.service` — user unit (installed by `setup`).
 - `packaging/aur/` — AUR `PKGBUILD`s (`whispy` release + `whispy-git`).

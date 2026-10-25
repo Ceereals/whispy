@@ -150,19 +150,22 @@ loaded. Remove it to free the memory: `omarchy-voxtype-remove`.
 **Status UI.** Omarchy's own dictation icon follows Voxtype only, so whispy brings
 two of its own; use either or both:
 
-- **Bar module.** On Omarchy 4, `setup` installs a whispy icon for Omarchy's bar
-  at `~/.config/omarchy/bar/modules/whispy.qml` (re-run alone with
-  `whispy-daemon setup omarchy`). Show it by adding this entry to a section of
-  `"bar"."layout"` in `~/.config/omarchy/shell.json`, which the bar reloads on save:
+- **Bar widget.** On Omarchy 4, `setup` installs whispy as an Omarchy bar widget
+  plugin (`whispy.dictation`, in `~/.config/omarchy/plugins/`) and puts it on the
+  right of the bar. Re-run just this step with `whispy-daemon setup omarchy`.
+  It follows `state.json` live: a mic, pulsing red while recording, an hourglass
+  while transcribing, a check or mic-off when done. Left click toggles dictation;
+  right or middle click cancels. Manage it like any Omarchy widget:
 
-  ```json
-  { "id": "whispy", "type": "qml" }
+  ```sh
+  omarchy bar move whispy.dictation --section left   # or center / right
+  omarchy bar set whispy.dictation hideWhenIdle true --json   # show only while dictating
+  omarchy plugin disable whispy.dictation             # take it off the bar
+  omarchy bar put whispy.dictation                    # put it back
   ```
 
-  It follows `state.json` live (mic, pulsing red while recording, hourglass while
-  transcribing, check or mic-off when done). Left click toggles dictation;
-  right or middle click cancels. Add `"hideWhenIdle": true` to the entry to show it
-  only while dictating.
+  Re-running `setup` updates the widget's files but never moves it, or re-adds it
+  after you disable it.
 - **Pill.** `setup` also runs the floating pill as the `whispy-pill` user service,
   a separate Quickshell instance that doesn't touch `omarchy-shell`. It sits at the
   bottom of the screen, clear of the bar. Keep only the bar icon with
