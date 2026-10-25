@@ -4,9 +4,16 @@ post_install() {
 
       whispy-daemon setup
 
-   It builds whisper.cpp (Vulkan or CPU, auto-detected), downloads the ggml
-   model, grants ydotool uinput access, seeds ~/.config/whispy, and enables the
-   systemd user services (plus the pill overlay when Quickshell is present).
+   It builds whisper.cpp, downloads the ggml model, grants ydotool uinput
+   access, seeds ~/.config/whispy, and enables the systemd user services (plus
+   the pill overlay when Quickshell is present).
+
+   For GPU acceleration (Vulkan: AMD, Intel or NVIDIA), install these BEFORE
+   running setup, together with your GPU's Vulkan driver (e.g. vulkan-radeon,
+   vulkan-intel, nvidia-utils); without them setup builds the CPU backend:
+
+      sudo pacman -S --needed vulkan-icd-loader shaderc vulkan-headers spirv-headers
+
    Then add the keybinds it prints at the end — Omarchy 4 binds go in
    ~/.config/hypr/bindings.lua. Reprint them with `whispy-daemon setup keybinds`.
 EOF
@@ -31,6 +38,21 @@ post_upgrade() {
           whispy-daemon setup
 
    Then restart the daemon: systemctl --user restart whispy-daemon
+EOF
+  fi
+  # Up to 0.3.1 the Vulkan loader (and, in 0.3.1, the build tools) were hard
+  # dependencies; from 0.3.2 they are optional, so pacman now sees them as orphans. The loader is what an existing
+  # Vulkan whisper-server links against, so warn before an orphan cleanup drops it.
+  if [ "$(vercmp "$2" 0.3.2)" -lt 0 ]; then
+    cat <<'EOF'
+==> whispy 0.3.2: the GPU (Vulkan) packages are now optional dependencies
+
+   If whisper-server was built with Vulkan (GPU), keep them out of orphan
+   cleanups, or the GPU build stops working:
+
+      sudo pacman -D --asexplicit vulkan-icd-loader shaderc vulkan-headers spirv-headers
+
+   On a CPU-only setup they can go: whispy no longer needs them.
 EOF
   fi
 }
