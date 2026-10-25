@@ -335,13 +335,18 @@ fn download_model(cfg: &Config) -> Result<(), String> {
     let resp = ureq::get(&url)
         .call()
         .map_err(|e| format!("download failed: {e}"))?;
-    let total: Option<u64> = resp.header("Content-Length").and_then(|s| s.parse().ok());
+    let total: Option<u64> = resp
+        .headers()
+        .get("Content-Length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok());
 
     // Download to a temp file, then rename, so an interrupted run never leaves a
     // truncated model that looks valid to the daemon.
     let tmp = dest.with_extension("part");
     let mut out = File::create(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    let mut reader = resp.into_reader();
+    // Unlike `read_to_*`, the body reader has no size cap — the model is ~0.5 GB.
+    let mut reader = resp.into_body().into_reader();
     let mut buf = vec![0u8; 1 << 16];
     let mut done: u64 = 0;
     loop {

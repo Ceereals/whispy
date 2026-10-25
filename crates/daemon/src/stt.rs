@@ -87,9 +87,12 @@ impl SttClient {
             base_url: format!("http://{}:{}", cfg.host, cfg.port),
             language: cfg.language.clone(),
             prompt,
-            agent: ureq::AgentBuilder::new()
-                .timeout(Duration::from_secs(cfg.timeout_secs))
-                .build(),
+            // Non-2xx responses come back as `Ok` so the error body can be reported.
+            agent: ureq::Agent::config_builder()
+                .timeout_global(Some(Duration::from_secs(cfg.timeout_secs)))
+                .http_status_as_error(false)
+                .build()
+                .into(),
         }
     }
 
@@ -106,26 +109,26 @@ impl SttClient {
         let body = build_multipart(&self.language, self.prompt.as_deref(), &wav);
         let url = format!("{}/inference", self.base_url);
 
-        let resp = self
+        let mut resp = self
             .agent
             .post(&url)
-            .set(
+            .header(
                 "Content-Type",
-                &format!("multipart/form-data; boundary={BOUNDARY}"),
+                format!("multipart/form-data; boundary={BOUNDARY}"),
             )
-            .send_bytes(&body)
-            .map_err(|e| match e {
-                ureq::Error::Status(code, resp) => {
-                    let detail = resp.into_string().unwrap_or_default();
-                    SttError::Http(format!("{url} returned status {code}: {detail}"))
-                }
-                ureq::Error::Transport(t) => {
-                    SttError::Http(format!("transport error contacting {url}: {t}"))
-                }
-            })?;
+            .send(&body[..])
+            .map_err(|e| SttError::Http(format!("transport error contacting {url}: {e}")))?;
+        if !resp.status().is_success() {
+            let code = resp.status().as_u16();
+            let detail = resp.body_mut().read_to_string().unwrap_or_default();
+            return Err(SttError::Http(format!(
+                "{url} returned status {code}: {detail}"
+            )));
+        }
 
         let text = resp
-            .into_string()
+            .body_mut()
+            .read_to_string()
             .map_err(|e| SttError::Http(format!("failed to read response body: {e}")))?;
 
         let parsed: Response =
@@ -312,5 +315,61 @@ mod tests {
         let s = String::from_utf8_lossy(&body);
         assert!(s.contains("name=\"prompt\""));
         assert!(s.contains("Hyprland, Quickshell"));
+    }
+
+    /// Serve one canned HTTP response on a loopback port and return a client
+    /// pointed at it, so the ureq request/response handling runs for real.
+    fn client_for(status: &str, body: &'static str) -> SttClient {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().expect("local addr").port();
+        let head = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().expect("accept");
+            // Drain the request (headers + multipart body) before answering.
+            let mut buf = [0u8; 64 * 1024];
+            let _ = conn.set_read_timeout(Some(Duration::from_millis(200)));
+            while matches!(conn.read(&mut buf), Ok(n) if n > 0) {}
+            let _ = conn.write_all(head.as_bytes());
+            let _ = conn.write_all(body.as_bytes());
+        });
+
+        let mut cfg: crate::config::Config =
+            toml::from_str(crate::config::default_config_toml()).expect("defaults parse");
+        cfg.stt.host = "127.0.0.1".to_string();
+        cfg.stt.port = port;
+        cfg.stt.timeout_secs = 5;
+        SttClient::new(&cfg.stt, None)
+    }
+
+    #[test]
+    fn transcribe_parses_a_successful_response() {
+        let client = client_for(
+            "200 OK",
+            r#"{"text":" ciao mondo ","segments":[],"detected_language":"it"}"#,
+        );
+        let t = client.transcribe(&[0_i16; 160]).expect("transcription");
+        assert_eq!(t.text, "ciao mondo");
+        assert_eq!(t.language.as_deref(), Some("it"));
+    }
+
+    #[test]
+    fn transcribe_reports_status_and_body_on_server_error() {
+        let client = client_for(
+            "500 Internal Server Error",
+            r#"{"error":"model not loaded"}"#,
+        );
+        match client.transcribe(&[0_i16; 160]) {
+            Err(SttError::Http(msg)) => {
+                assert!(msg.contains("status 500"), "{msg}");
+                assert!(msg.contains("model not loaded"), "{msg}");
+            }
+            other => panic!("expected Http error, got {other:?}"),
+        }
     }
 }
