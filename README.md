@@ -2,7 +2,7 @@
 
 # whispy
 
-**Push-to-talk dictation for Hyprland.** Hold a key, speak, release — your words land in the focused field.
+**Push-to-talk dictation for Hyprland and Omarchy.** Hold a key, speak, release — your words land in the focused field.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![AUR](https://img.shields.io/aur/version/whispy?label=AUR)](https://aur.archlinux.org/packages/whispy)
@@ -19,26 +19,43 @@
 Local, fast, Wayland-native dictation: a resident daemon keeps a
 [whisper.cpp](https://github.com/ggerganov/whisper.cpp) model in RAM, a thin client is fired
 from your Hyprland binds, and a [Quickshell](https://quickshell.org) pill shows live state.
-Speech never leaves your machine. Hyprland gets the full experience (pill overlay); dictation
+Speech never leaves your machine. Hyprland — including [Omarchy](https://omarchy.org) 4 — gets
+the full experience (pill overlay); dictation
 also runs on **X11/Xorg and generic Wayland** (GNOME, KDE, Sway, XFCE, i3) — see
 [Non-Hyprland](#non-hyprland-x11-and-generic-wayland).
 
 ## Quickstart
 
 ```sh
-paru -S whispy            # install (Arch/CachyOS)
+paru -S whispy            # install (Arch/CachyOS; `yay -S whispy` on Omarchy)
 whispy-daemon setup       # build whisper.cpp, fetch model, enable service
 ```
 
-Then add a toggle bind to Hyprland (press to start, press again to stop):
+Then add the keybinds `setup` prints — it detects Omarchy and Hyprland's Lua vs
+hyprlang config. On **Omarchy 4**, append to `~/.config/hypr/bindings.lua`:
 
-```ini
-bind = SUPER ALT, Space, exec, whispy-client toggle
-bind = , Escape, exec, whispy-client cancel
+```lua
+hl.unbind("SUPER + CTRL + X")  -- Omarchy's Voxtype dictation, if installed
+hl.unbind("F9")
+o.bind("SUPER + CTRL + X", "Toggle dictation", "whispy-client toggle")
+o.bind("F9", "Start dictation (push-to-talk)", "whispy-client start")
+o.bind("F9", "Stop dictation (push-to-talk)", "whispy-client stop", { release = true })
+o.bind("SUPER + CTRL + SHIFT + X", "Cancel dictation", "whispy-client cancel")
 ```
 
-Reload Hyprland, press **SUPER+ALT+Space**, speak, press again — the text is typed into
-your focused field. See [`docs/hyprland-setup.md`](docs/hyprland-setup.md) for the full bind set.
+On a classic `hyprland.conf`:
+
+```ini
+bindd = SUPER CTRL, X, Toggle dictation, exec, whispy-client toggle
+bindd = , F9, Start dictation, exec, whispy-client start
+bindr = , F9, exec, whispy-client stop
+bindd = SUPER CTRL SHIFT, X, Cancel dictation, exec, whispy-client cancel
+```
+
+Hold **F9**, speak, release — the text is typed into your focused field (or tap
+**SUPER+CTRL+X** to start and again to stop). See
+[`docs/hyprland-setup.md`](docs/hyprland-setup.md) for the plain-Lua variant and the
+[Omarchy notes](docs/hyprland-setup.md#omarchy).
 
 ## Install
 
@@ -82,10 +99,12 @@ whispy-daemon setup                 # --quickshell forces the pill; --no-pill in
 Run any step on its own with:
 
 ```sh
-whispy-daemon setup doctor|whisper|model|ydotool|systemd|quickshell|verify
+whispy-daemon setup doctor|whisper|model|ydotool|systemd|quickshell|verify|keybinds
 ```
 
-The only manual step left is the keybinds — `setup` prints them at the end (Hyprland binds, see
+The only manual step left is the keybinds — `setup` prints them at the end, in the syntax of
+the config it finds (Omarchy 4 `bindings.lua`, Hyprland Lua, or `hyprland.conf`); reprint them
+with `whispy-daemon setup keybinds` (see
 [`docs/hyprland-setup.md`](docs/hyprland-setup.md); X11/GNOME equivalents under
 [Non-Hyprland](#non-hyprland-x11-and-generic-wayland)). Re-run `whispy-daemon setup verify` any
 time to check that the model, daemon, `ydotoold`, and whisper-server are all up.

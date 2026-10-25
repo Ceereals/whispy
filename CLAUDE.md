@@ -70,7 +70,7 @@ Cargo workspace (`resolver = "3"`, `edition = "2024"`, MSRV `rust-version = 1.85
 | `inject.rs` | Text injection: `paste` mode (`wl-copy` + `ydotool` Ctrl+V, clipboard save/restore) or `type` mode (`wtype`). |
 | `state.rs` | `StatePublisher` writes `state.json` atomically (tmp + rename); `Status` keeps in-memory + on-disk snapshot in sync and flashes transient states. |
 | `config.rs` | TOML config; built-in defaults embedded via `include_str!`; `Config::validate` rejects bad config at startup. |
-| `setup.rs` | `whispy-daemon setup` — idempotent one-shot bootstrap (build whisper.cpp, fetch model, ydotool perms, seed config, install systemd unit, opt-in Quickshell). |
+| `setup.rs` | `whispy-daemon setup` — idempotent one-shot bootstrap (build whisper.cpp, fetch model, ydotool perms, seed config, install systemd unit, opt-in Quickshell), then prints keybinds for the detected config (`HyprConfig`: Omarchy 4 Lua / Omarchy 3 / Hyprland Lua / hyprlang). |
 | `stats.rs` | `whispy-daemon stats` — read-only summary of `transcripts.jsonl` (accepted vs dropped by reason) for filter tuning. |
 
 ## IPC protocol
@@ -160,6 +160,12 @@ binaries (not whisper-server/model), publish a GitHub release, and push to the A
 - whisper-server is launched/supervised by the daemon and respawned in-process by a monitor
   thread (`main.rs`) if it dies. Don't shell out to start it elsewhere. STT requests are
   bounded by `stt.timeout_secs` so a hung server surfaces an error instead of stalling.
+- Hyprland configs are now Lua (`hyprland.lua`, `hl.bind`) as well as hyprlang
+  (`hyprland.conf`); Omarchy 4 adds an `o.bind` helper and loads user binds from
+  `~/.config/hypr/bindings.lua`. Omarchy owns SUPER+SPACE (and its ALT/SHIFT/CTRL
+  variants), so whispy's default keys are Omarchy's dictation keys: F9 push-to-talk,
+  SUPER+CTRL+X toggle, SUPER+CTRL+SHIFT+X cancel. Keep docs, `README.md`, and
+  `setup::wayland_keybinds` in sync when changing them.
 - The mic records quiet (~20–25 dB low); audio is peak-normalized before transcription
   and the first ~50 ms are dropped to skip the codec stream-start transient. Keep this in
   mind when touching `audio.rs`.

@@ -5,8 +5,10 @@
 //! (Vulkan, CPU, or auto-detected — see `stt.backend`), downloads the
 //! ggml model to the path the config expects, grants ydotool uinput access, seeds
 //! the user config, installs+enables the systemd user unit, and (opt-in) drops the
-//! Quickshell pill module in place. Each step is idempotent — already-done work is
-//! detected and skipped — so it is safe to re-run.
+//! Quickshell pill module in place, then prints keybinds in the syntax of the
+//! user's compositor config (Omarchy, Hyprland Lua or hyprlang, X11 binders).
+//! Each step is idempotent — already-done work is detected and skipped — so it is
+//! safe to re-run.
 
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -55,6 +57,8 @@ enum SetupStep {
     Quickshell,
     /// Check that the installed system is actually ready to dictate.
     Verify,
+    /// Print the push-to-talk keybinds for your compositor config.
+    Keybinds,
 }
 
 /// Entry point dispatched from `main` when the `setup` subcommand is given.
@@ -71,6 +75,10 @@ pub fn run(cfg: &Config, args: SetupArgs) -> ExitCode {
         Some(SetupStep::Quickshell) => install_quickshell(!args.no_pill),
         Some(SetupStep::Verify) => {
             verify(cfg);
+            Ok(())
+        }
+        Some(SetupStep::Keybinds) => {
+            print_keybinds(cfg);
             Ok(())
         }
         None => full(cfg, &args),
@@ -133,6 +141,9 @@ fn doctor(cfg: &Config) {
             DisplayServer::Wayland
         });
     println!("  display server: {}", server_label(server));
+    if server == DisplayServer::Wayland && have("hyprctl") {
+        println!("  hyprland config: {}", HyprConfig::detect().label());
+    }
 
     println!("  runtime:");
     for (cmd, note) in required_tools(server, &cfg.injection.mode) {
@@ -793,25 +804,128 @@ fn has_lib(needle: &str) -> bool {
 
 fn print_next_steps(server: DisplayServer) {
     println!("\n==> done. Add push-to-talk keybinds:");
+    print_server_keybinds(server);
+    println!("\nThen check it: whispy-client ping");
+}
+
+/// `setup keybinds`: just the keybind hints, for the display server in use.
+fn print_keybinds(cfg: &Config) {
+    let server = display::resolve_from_env(Backend::parse(&cfg.injection.backend))
+        .unwrap_or(DisplayServer::Wayland);
+    println!("==> push-to-talk keybinds");
+    print_server_keybinds(server);
+}
+
+fn print_server_keybinds(server: DisplayServer) {
     match server {
         DisplayServer::Wayland => print_wayland_keybinds(),
         DisplayServer::X11 => print_x11_keybinds(),
     }
-    println!("\nThen check it: whispy-client ping");
 }
 
-/// Hyprland (and other layer-shell compositors) keybind hints.
+/// Hyprland (and other layer-shell compositors) keybind hints, in the syntax of
+/// the config the user actually runs.
 fn print_wayland_keybinds() {
+    let hypr = HyprConfig::detect();
+    println!("\n  {}:\n\n{}", hypr.label(), wayland_keybinds(hypr));
     println!(
-        "\n  Hyprland (~/.config/hypr/hyprland.conf), press-and-hold:\n\
-         \n\
-         bindd = SUPER, Space, Start dictation, exec, whispy-client start\n\
-         bindr = SUPER, Space, Stop dictation,  exec, whispy-client stop\n\
-         bind  = SUPER SHIFT, Space, Cancel,    exec, whispy-client cancel\n\
-         \n\
-         Other compositors (Sway, etc.) can bind the same three commands, or use\n\
+        "\n  Other compositors (Sway, etc.) can bind the same commands, or use just\n  \
          a single toggle: `whispy-client toggle`."
     );
+}
+
+/// Which Hyprland config the user runs, so `setup` prints binds they can paste
+/// as-is. Hyprland now reads a Lua config (`hyprland.lua`) in place of hyprlang
+/// (`hyprland.conf`), and Omarchy layers its own `o.bind` helper and a dedicated
+/// user bindings file on top of each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HyprConfig {
+    /// Omarchy 4+: Lua config; user binds go in `~/.config/hypr/bindings.lua`.
+    OmarchyLua,
+    /// Omarchy 3.x: hyprlang config; user binds go in `~/.config/hypr/bindings.conf`.
+    OmarchyConf,
+    /// Plain Hyprland with a Lua config (`~/.config/hypr/hyprland.lua`).
+    Lua,
+    /// Plain Hyprland with the classic hyprlang config (`hyprland.conf`).
+    Conf,
+}
+
+impl HyprConfig {
+    /// Pick the flavor from the two probed facts (pure, for tests).
+    fn pick(omarchy: bool, lua: bool) -> Self {
+        match (omarchy, lua) {
+            (true, true) => HyprConfig::OmarchyLua,
+            (true, false) => HyprConfig::OmarchyConf,
+            (false, true) => HyprConfig::Lua,
+            (false, false) => HyprConfig::Conf,
+        }
+    }
+
+    /// Probe the machine: Omarchy is detected from `OMARCHY_PATH` or its install
+    /// dir (`/usr/share/omarchy` on 4.x, `~/.local/share/omarchy` on 3.x); a Lua
+    /// config from `$XDG_CONFIG_HOME/hypr/hyprland.lua`.
+    fn detect() -> Self {
+        let omarchy = std::env::var_os("OMARCHY_PATH").is_some_and(|p| !p.is_empty())
+            || Path::new("/usr/share/omarchy").is_dir()
+            || config::expand("~/.local/share/omarchy").is_dir();
+        let lua = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| config::expand("~/.config"))
+            .join("hypr/hyprland.lua")
+            .is_file();
+        HyprConfig::pick(omarchy, lua)
+    }
+
+    /// Where the binds go, as a heading for the printed snippet.
+    fn label(self) -> &'static str {
+        match self {
+            HyprConfig::OmarchyLua => "Omarchy 4 (~/.config/hypr/bindings.lua)",
+            HyprConfig::OmarchyConf => "Omarchy 3 (~/.config/hypr/bindings.conf)",
+            HyprConfig::Lua => "Hyprland Lua config (~/.config/hypr/hyprland.lua)",
+            HyprConfig::Conf => "Hyprland (~/.config/hypr/hyprland.conf)",
+        }
+    }
+}
+
+/// The keybind snippet for `hypr`: SUPER+CTRL+X toggles, F9 is push-to-talk
+/// (hold to record, release to transcribe), SUPER+CTRL+SHIFT+X cancels.
+///
+/// These are Omarchy's own dictation keys, which it binds only while its bundled
+/// dictation backend (Voxtype) is installed — so they're free on a stock Omarchy
+/// and the leading unbinds make whispy win if Voxtype is present. They also stay
+/// clear of SUPER+SPACE and its ALT/SHIFT/CTRL variants, which Omarchy uses for
+/// its menus and bar.
+fn wayland_keybinds(hypr: HyprConfig) -> &'static str {
+    match hypr {
+        HyprConfig::OmarchyLua => {
+            "hl.unbind(\"SUPER + CTRL + X\")  -- Omarchy's Voxtype dictation, if installed\n\
+             hl.unbind(\"F9\")\n\
+             o.bind(\"SUPER + CTRL + X\", \"Toggle dictation\", \"whispy-client toggle\")\n\
+             o.bind(\"F9\", \"Start dictation (push-to-talk)\", \"whispy-client start\")\n\
+             o.bind(\"F9\", \"Stop dictation (push-to-talk)\", \"whispy-client stop\", { release = true })\n\
+             o.bind(\"SUPER + CTRL + SHIFT + X\", \"Cancel dictation\", \"whispy-client cancel\")"
+        }
+        HyprConfig::OmarchyConf => {
+            "unbind = SUPER CTRL, X\n\
+             unbind = , F9\n\
+             bindd  = SUPER CTRL, X, Toggle dictation, exec, whispy-client toggle\n\
+             bindd  = , F9, Start dictation, exec, whispy-client start\n\
+             bindr  = , F9, exec, whispy-client stop\n\
+             bindd  = SUPER CTRL SHIFT, X, Cancel dictation, exec, whispy-client cancel"
+        }
+        HyprConfig::Lua => {
+            "hl.bind(\"SUPER + CTRL + X\", hl.dsp.exec_cmd(\"whispy-client toggle\"), { description = \"Toggle dictation\" })\n\
+             hl.bind(\"F9\", hl.dsp.exec_cmd(\"whispy-client start\"), { description = \"Start dictation\" })\n\
+             hl.bind(\"F9\", hl.dsp.exec_cmd(\"whispy-client stop\"), { description = \"Stop dictation\", release = true })\n\
+             hl.bind(\"SUPER + CTRL + SHIFT + X\", hl.dsp.exec_cmd(\"whispy-client cancel\"), { description = \"Cancel dictation\" })"
+        }
+        HyprConfig::Conf => {
+            "bindd = SUPER CTRL, X, Toggle dictation, exec, whispy-client toggle\n\
+             bindd = , F9, Start dictation, exec, whispy-client start\n\
+             bindr = , F9, exec, whispy-client stop\n\
+             bindd = SUPER CTRL SHIFT, X, Cancel dictation, exec, whispy-client cancel"
+        }
+    }
 }
 
 /// X11 (sxhkd / xbindkeys) and GNOME custom-shortcut keybind hints.
@@ -904,6 +1018,66 @@ mod tests {
             // No Wayland tools leak into the X11 list.
             assert!(!names.contains(&"wl-copy"));
             assert!(!names.contains(&"wtype"));
+        }
+    }
+
+    #[test]
+    fn hypr_config_pick_covers_every_combination() {
+        assert_eq!(HyprConfig::pick(true, true), HyprConfig::OmarchyLua);
+        assert_eq!(HyprConfig::pick(true, false), HyprConfig::OmarchyConf);
+        assert_eq!(HyprConfig::pick(false, true), HyprConfig::Lua);
+        assert_eq!(HyprConfig::pick(false, false), HyprConfig::Conf);
+    }
+
+    #[test]
+    fn keybinds_use_the_syntax_of_each_config() {
+        let omarchy = wayland_keybinds(HyprConfig::OmarchyLua);
+        assert!(omarchy.contains("o.bind(\"SUPER + CTRL + X\""), "{omarchy}");
+        assert!(omarchy.contains("{ release = true }"), "{omarchy}");
+
+        let lua = wayland_keybinds(HyprConfig::Lua);
+        // Plain Hyprland has no Omarchy `o` helper table.
+        assert!(!lua.contains("o.bind"), "{lua}");
+        assert!(
+            lua.contains("hl.dsp.exec_cmd(\"whispy-client stop\")"),
+            "{lua}"
+        );
+        assert!(lua.contains("release = true"), "{lua}");
+
+        for conf in [HyprConfig::OmarchyConf, HyprConfig::Conf] {
+            let binds = wayland_keybinds(conf);
+            let stop = binds
+                .lines()
+                .find(|l| l.contains("whispy-client stop"))
+                .expect("stop bind present");
+            assert!(stop.starts_with("bindr"), "{binds}");
+            assert!(!binds.contains("hl."), "{binds}");
+        }
+    }
+
+    #[test]
+    fn omarchy_keybinds_override_voxtype_before_binding() {
+        // Omarchy binds SUPER+CTRL+X and F9 to Voxtype when it's installed; a second
+        // bind on the same key would fire both, so the unbinds must come first.
+        for hypr in [HyprConfig::OmarchyLua, HyprConfig::OmarchyConf] {
+            let binds = wayland_keybinds(hypr);
+            let unbind = binds.find("unbind").expect("unbind present");
+            let bind = binds.find("whispy-client").expect("bind present");
+            assert!(unbind < bind, "{binds}");
+        }
+    }
+
+    #[test]
+    fn keybinds_avoid_omarchy_super_space_menus() {
+        // SUPER+SPACE (+ALT/SHIFT/CTRL) open Omarchy's menus and bar toggles.
+        for hypr in [
+            HyprConfig::OmarchyLua,
+            HyprConfig::OmarchyConf,
+            HyprConfig::Lua,
+            HyprConfig::Conf,
+        ] {
+            let binds = wayland_keybinds(hypr).to_ascii_uppercase();
+            assert!(!binds.contains("SPACE"), "{binds}");
         }
     }
 
