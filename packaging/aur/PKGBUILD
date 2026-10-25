@@ -1,8 +1,8 @@
 # Maintainer: Riccardo Romoli <romoliriccardo.rr@gmail.com>
 pkgname=whispy
-pkgver=0.2.0
+pkgver=0.3.0
 pkgrel=1
-pkgdesc="System-wide push-to-talk dictation for Hyprland/Wayland and X11, powered by whisper.cpp"
+pkgdesc="System-wide push-to-talk dictation for Hyprland/Omarchy, Wayland and X11, powered by whisper.cpp"
 arch=('x86_64')
 url="https://github.com/Ceereals/whispy"
 license=('MIT')
