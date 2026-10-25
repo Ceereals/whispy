@@ -48,7 +48,8 @@ pub struct Stt {
     pub language: String,
     pub server_bin: String,
     /// whisper.cpp compute backend that `setup whisper` builds whisper-server with:
-    /// `"auto"` (Vulkan when the loader is present, else CPU), `"vulkan"`, or `"cpu"`.
+    /// `"auto"` (Vulkan when the loader and the Vulkan build tools are installed, else
+    /// CPU), `"vulkan"`, or `"cpu"`.
     /// Only consulted at build time; an installed binary keeps whatever it was built with.
     #[serde(default = "default_backend")]
     pub backend: String,

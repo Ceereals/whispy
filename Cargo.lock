@@ -847,7 +847,7 @@ dependencies = [
 
 [[package]]
 name = "whispy-client"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "clap",
  "serde_json",
@@ -856,7 +856,7 @@ dependencies = [
 
 [[package]]
 name = "whispy-common"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -864,7 +864,7 @@ dependencies = [
 
 [[package]]
 name = "whispy-daemon"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "clap",
  "hound",

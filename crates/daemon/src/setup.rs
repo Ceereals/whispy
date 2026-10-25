@@ -261,32 +261,8 @@ fn build_whisper(cfg: &Config) -> Result<(), String> {
         return Ok(());
     }
 
-    // Fail fast with a clear message: without the Vulkan loader the cmake configure
-    // below dies in a wall of output that doesn't name the real problem. (Only the
-    // Vulkan backend needs it — the CPU backend builds with no GPU libraries.)
-    if backend == "vulkan" && !has_vulkan() {
-        return Err(
-            "the Vulkan loader (libvulkan) is missing — the Vulkan whisper.cpp build needs it.\n  \
-             Install it (Arch: `vulkan-icd-loader` + your GPU's ICD, e.g. `vulkan-radeon`), then re-run.\n  \
-             Or set `stt.backend = \"cpu\"` in config.toml to build a CPU-only whisper-server instead."
-            .to_string(),
-        );
-    }
-    // The Vulkan build also needs a shader compiler and two header sets; without
-    // them cmake fails deep in ggml's configure. Name the packages up front.
     if backend == "vulkan" {
-        let missing = missing_vulkan_build_deps(have, header_installed);
-        if !missing.is_empty() {
-            let packages: Vec<&str> = missing.iter().map(|d| d.package).collect();
-            let what: Vec<&str> = missing.iter().map(|d| d.what).collect();
-            return Err(format!(
-                "the Vulkan whisper.cpp build is missing: {}.\n  \
-                 Install them (Arch: `sudo pacman -S --needed {}`), then re-run.\n  \
-                 Or set `stt.backend = \"cpu\"` in config.toml to build a CPU-only whisper-server instead.",
-                what.join(", "),
-                packages.join(" ")
-            ));
-        }
+        vulkan_preflight()?;
     }
 
     // Default layout: <root>/build/bin/whisper-server. Derive <root> and <build>.
@@ -295,6 +271,10 @@ fn build_whisper(cfg: &Config) -> Result<(), String> {
         .and_then(Path::parent)
         .map(Path::to_path_buf)
         .ok_or_else(|| format!("cannot derive build dir from {}", bin.display()))?;
+
+    if cfg.stt.backend == "auto" && backend == "cpu" && has_vulkan() {
+        print_gpu_hint(&build_dir);
+    }
     let repo = build_dir
         .parent()
         .map(Path::to_path_buf)
@@ -824,22 +804,81 @@ pub(crate) fn have(cmd: &str) -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// Resolve the configured `stt.backend` to a concrete backend for the build:
-/// `"auto"` picks Vulkan when its loader is present, else CPU; the explicit values
-/// pass through unchanged. Unknown strings are validated away at config load, but
-/// fall back to CPU here so `setup whisper` can never panic on one.
+/// Fail fast, naming what's missing, before a Vulkan build: without the loader,
+/// the shader compiler or the headers, cmake dies deep in ggml's configure with
+/// output that doesn't name the real problem.
+fn vulkan_preflight() -> Result<(), String> {
+    if !has_vulkan() {
+        return Err(
+            "the Vulkan loader (libvulkan) is missing — the Vulkan whisper.cpp build needs it.\n  \
+             Install it (Arch: `vulkan-icd-loader` + your GPU's ICD, e.g. `vulkan-radeon`), then re-run.\n  \
+             Or set `stt.backend = \"cpu\"` in config.toml to build a CPU-only whisper-server instead."
+                .to_string(),
+        );
+    }
+    let missing = missing_vulkan_build_deps(have, header_installed);
+    if !missing.is_empty() {
+        let packages: Vec<&str> = missing.iter().map(|d| d.package).collect();
+        let what: Vec<&str> = missing.iter().map(|d| d.what).collect();
+        return Err(format!(
+            "the Vulkan whisper.cpp build is missing: {}.\n  \
+             Install them (Arch: `sudo pacman -S --needed {}`), then re-run.\n  \
+             Or set `stt.backend = \"cpu\"` in config.toml to build a CPU-only whisper-server instead.",
+            what.join(", "),
+            packages.join(" ")
+        ));
+    }
+    Ok(())
+}
+
+/// `auto` fell back to CPU on a machine with a Vulkan loader, so the GPU build
+/// tools are what's missing: say how to get GPU acceleration instead.
+fn print_gpu_hint(build_dir: &Path) {
+    let missing = missing_gpu_build_deps();
+    let packages: Vec<&str> = missing.iter().map(|d| d.package).collect();
+    let what: Vec<&str> = missing.iter().map(|d| d.what).collect();
+    println!(
+        "  building the CPU backend: GPU (Vulkan) acceleration also needs {}.\n  \
+         For GPU: install them (Arch: `sudo pacman -S --needed {}`), then rebuild with\n    \
+         rm -rf {} && whispy-daemon setup whisper",
+        what.join(", "),
+        packages.join(" "),
+        build_dir.display()
+    );
+}
+
+/// Resolve the configured `stt.backend` to a concrete backend for the build
+/// (see [`pick_backend`]), probing the host for the Vulkan loader and build tools.
 fn resolve_backend(configured: &str) -> &'static str {
+    pick_backend(
+        configured,
+        has_vulkan(),
+        missing_gpu_build_deps().is_empty(),
+    )
+}
+
+/// Pick the concrete backend. `"auto"` builds Vulkan only when it can succeed:
+/// the loader is present *and* the GPU build tools (glslc, Vulkan and SPIR-V
+/// headers) are installed; otherwise CPU, so a GPU-less or tool-less machine
+/// still gets a working whisper-server. The explicit values pass through (an
+/// explicit `"vulkan"` then fails fast naming what's missing). Unknown strings are
+/// validated away at config load, but fall back to CPU here so `setup whisper` can
+/// never panic on one.
+fn pick_backend(configured: &str, has_loader: bool, has_gpu_tools: bool) -> &'static str {
     match configured {
         "vulkan" => "vulkan",
-        "cpu" => "cpu",
-        _ => {
-            if has_vulkan() {
-                "vulkan"
-            } else {
-                "cpu"
-            }
-        }
+        "auto" if has_loader && has_gpu_tools => "vulkan",
+        _ => "cpu",
     }
+}
+
+/// The Vulkan-only build deps that are missing. cmake is left out: every build
+/// needs it, so it never decides between the backends.
+fn missing_gpu_build_deps() -> Vec<BuildDep> {
+    missing_vulkan_build_deps(have, header_installed)
+        .into_iter()
+        .filter(|dep| dep.package != "cmake")
+        .collect()
 }
 
 /// Is the Vulkan loader present (so the Vulkan whisper.cpp build can run)?
@@ -1250,17 +1289,27 @@ mod tests {
     }
 
     #[test]
-    fn resolve_backend_passes_through_explicit_values() {
-        assert_eq!(resolve_backend("vulkan"), "vulkan");
-        assert_eq!(resolve_backend("cpu"), "cpu");
+    fn pick_backend_passes_through_explicit_values() {
+        for (loader, tools) in [(false, false), (true, false), (true, true)] {
+            assert_eq!(pick_backend("vulkan", loader, tools), "vulkan");
+            assert_eq!(pick_backend("cpu", loader, tools), "cpu");
+        }
     }
 
     #[test]
-    fn resolve_backend_auto_picks_a_concrete_backend() {
-        // "auto" depends on host Vulkan presence, but must always resolve to one
-        // of the two concrete backends so the build can never proceed on "auto".
-        assert!(matches!(resolve_backend("auto"), "vulkan" | "cpu"));
+    fn pick_backend_auto_needs_loader_and_gpu_tools_for_vulkan() {
+        assert_eq!(pick_backend("auto", true, true), "vulkan");
+        // Loader but no headers/glslc (the GPU deps are optional): CPU, not a
+        // Vulkan build that would fail in cmake.
+        assert_eq!(pick_backend("auto", true, false), "cpu");
+        assert_eq!(pick_backend("auto", false, true), "cpu");
+        assert_eq!(pick_backend("auto", false, false), "cpu");
         // An unknown string (shouldn't reach here past config validation) is safe.
-        assert!(matches!(resolve_backend("rocm"), "vulkan" | "cpu"));
+        assert_eq!(pick_backend("rocm", true, true), "cpu");
+    }
+
+    #[test]
+    fn resolve_backend_always_picks_a_concrete_backend() {
+        assert!(matches!(resolve_backend("auto"), "vulkan" | "cpu"));
     }
 }

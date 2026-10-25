@@ -13,9 +13,10 @@ pill overlay shows live state.
 
 Target platform is Linux + Wayland (Hyprland), developed on AMD RDNA4 with the
 Vulkan backend (no ROCm). whisper-server's compute backend is selectable via
-`stt.backend` (`auto` / `vulkan` / `cpu`): `auto` builds Vulkan when its loader is
-present, else a CPU build (OpenBLAS-accelerated when `libopenblas` is installed),
-so GPU-less machines work too. It is **not** cross-platform (Linux/Wayland only).
+`stt.backend` (`auto` / `vulkan` / `cpu`): `auto` builds Vulkan when the loader and
+the Vulkan build tools (glslc, Vulkan + SPIR-V headers) are installed, else a CPU
+build (OpenBLAS-accelerated when `libopenblas` is installed), so GPU-less machines
+work too. The GPU packages are optional AUR dependencies (`setup::pick_backend`). It is **not** cross-platform (Linux/Wayland only).
 
 ## Architecture
 

@@ -1,18 +1,23 @@
 # Maintainer: Riccardo Romoli <romoliriccardo.rr@gmail.com>
 pkgname=whispy
-pkgver=0.3.1
+pkgver=0.3.2
 pkgrel=1
 pkgdesc="System-wide push-to-talk dictation for Hyprland/Omarchy, Wayland and X11, powered by whisper.cpp"
 arch=('x86_64')
 url="https://github.com/Ceereals/whispy"
 license=('MIT')
-# `whispy-daemon setup` builds whisper.cpp on first run; with vulkan-icd-loader
-# present it builds the Vulkan backend, which needs cmake, glslc (shaderc) and the
-# Vulkan + SPIR-V headers, so those are hard dependencies.
-depends=('pipewire' 'wl-clipboard' 'ydotool' 'libnotify' 'vulkan-icd-loader'
-         'git' 'cmake' 'shaderc' 'vulkan-headers' 'spirv-headers')
+# `whispy-daemon setup` clones and builds whisper.cpp on first run (git, cmake).
+# The GPU (Vulkan) build is optional: with stt.backend = "auto" it is chosen only
+# when the loader, glslc and both header sets below are installed; otherwise setup
+# builds the CPU backend and prints what GPU acceleration needs.
+depends=('pipewire' 'wl-clipboard' 'ydotool' 'libnotify' 'git' 'cmake')
 makedepends=('rust' 'cargo' 'git')
-optdepends=('quickshell: dictation pill overlay UI (Wayland layer-shell)'
+optdepends=('vulkan-icd-loader: GPU acceleration (Vulkan; AMD, Intel or NVIDIA)'
+            'shaderc: GPU acceleration (glslc, to build the Vulkan backend)'
+            'vulkan-headers: GPU acceleration (to build the Vulkan backend)'
+            'spirv-headers: GPU acceleration (to build the Vulkan backend)'
+            'openblas: faster CPU backend (~3-4x)'
+            'quickshell: dictation pill overlay UI (Wayland layer-shell)'
             'wtype: type-mode injection on Wayland'
             'xdotool: type-mode injection and window-class detection on X11'
             'xclip: clipboard paste mode on X11'
