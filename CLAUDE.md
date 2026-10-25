@@ -59,7 +59,7 @@ Cargo workspace (`resolver = "3"`, `edition = "2024"`, MSRV `rust-version = 1.88
 | Module | Responsibility |
 |--------|----------------|
 | `main.rs` | CLI args (clap), config load, JSON logging init, signal handling, wires everything, runs the socket server. Also routes the `setup` subcommand. |
-| `app.rs` | `App` — maps socket commands to the capture→transcribe→filter→inject flow; owns the active capture and per-recording `StartCtx`. |
+| `app.rs` | `App` — maps socket commands to the capture→transcribe→filter→inject flow; owns the active `Session` (capture + its `AppContext`, handed to the transcribe thread) and an inject lock so overlapping clips paste one at a time. |
 | `server.rs` | Unix-socket server: line-based JSON (`Cmd` in, `Resp` out), polls a shutdown flag for clean SIGTERM exit. |
 | `audio.rs` | PipeWire capture via `pw-record` (raw s16le mono), RMS metering, gain, clip limits, trailing-silence auto-stop, peak normalization. |
 | `whisper.rs` | Spawns and supervises the `whisper-server` child; waits for its port; a monitor thread in `main` polls `is_alive` and `restart`s it if it dies; kills it on shutdown. |
@@ -156,7 +156,8 @@ binaries (not whisper-server/model), publish a GitHub release, and push to the A
 - A systemd user service started before the compositor may lack `WAYLAND_DISPLAY`;
   `main.rs` discovers the lowest-numbered `wayland-N` socket so injection tools work.
 - `state.json` is written atomically (tmp + rename) — never write it in place; the UI
-  polls it and must never see a half-written file.
+  polls it and must never see a half-written file. Several threads write state, and
+  all publishes share one `.tmp` path, so `Status` publishes while holding its lock.
 - whisper-server is launched/supervised by the daemon and respawned in-process by a monitor
   thread (`main.rs`) if it dies. Don't shell out to start it elsewhere. STT requests are
   bounded by `stt.timeout_secs` so a hung server surfaces an error instead of stalling.
