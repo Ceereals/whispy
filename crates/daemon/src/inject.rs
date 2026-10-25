@@ -17,13 +17,13 @@
 //!
 //! [`Injector::inject`] dispatches to the configured mode over the chosen backend.
 
-use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::Duration;
 
 use tracing::{debug, warn};
 
 use crate::display::DisplayServer;
+use crate::proc;
 
 /// A swappable clipboard + direct-typing backend (Wayland or X11). The portable
 /// `ydotool` paste keystroke is *not* part of this trait — it lives in [`Injector`].
@@ -213,18 +213,20 @@ impl Injector {
     /// Deliver the configured paste keystroke via `ydotool key`. Portable across
     /// Wayland and X11 (uinput-based), so it stays here rather than in the backend.
     fn paste(&self) -> Result<(), InjectError> {
-        let status = Command::new("ydotool")
-            .arg("key")
-            .arg("--key-delay")
-            .arg(self.key_delay_ms.to_string())
-            .args(&self.paste_keys)
-            .status()
-            .map_err(|e| {
-                InjectError::Paste(format!(
-                    "failed to spawn ydotool ({e}); is ydotoold running with uinput access? \
-                     see scripts/setup-ydotool.sh"
-                ))
-            })?;
+        let status = proc::status(
+            Command::new("ydotool")
+                .arg("key")
+                .arg("--key-delay")
+                .arg(self.key_delay_ms.to_string())
+                .args(&self.paste_keys),
+            proc::KEYS,
+        )
+        .map_err(|e| {
+            InjectError::Paste(format!(
+                "failed to run ydotool ({e}); is ydotoold running with uinput access? \
+                 see scripts/setup-ydotool.sh"
+            ))
+        })?;
         if !status.success() {
             return Err(InjectError::Paste(format!(
                 "ydotool exited with {status}; is ydotoold running with uinput access? \
@@ -268,12 +270,9 @@ impl InjectBackend for WaylandClipboard {
     fn type_text(&self, text: &str) -> Result<(), InjectError> {
         // `--` stops wtype's option parsing, so a transcript starting with `-`
         // is typed literally instead of being read as a flag.
-        let status = Command::new("wtype")
-            .arg("--")
-            .arg(text)
-            .status()
+        let status = proc::status(Command::new("wtype").arg("--").arg(text), proc::TYPING)
             .map_err(|e| {
-                InjectError::Type(format!("failed to spawn wtype ({e}); is wtype installed?"))
+                InjectError::Type(format!("failed to run wtype ({e}); is wtype installed?"))
             })?;
         if !status.success() {
             return Err(InjectError::Type(format!("wtype exited with {status}")));
@@ -307,10 +306,8 @@ impl InjectBackend for WaylandClipboard {
     }
 
     fn clear_clipboard(&self) -> Result<(), String> {
-        let status = Command::new("wl-copy")
-            .arg("--clear")
-            .status()
-            .map_err(|e| format!("failed to spawn wl-copy: {e}"))?;
+        let status = proc::status(Command::new("wl-copy").arg("--clear"), proc::CLIPBOARD)
+            .map_err(|e| format!("failed to run wl-copy: {e}"))?;
         if !status.success() {
             return Err(format!("wl-copy --clear exited with {status}"));
         }
@@ -320,7 +317,10 @@ impl InjectBackend for WaylandClipboard {
     /// Read the clipboard text via `wl-paste --no-newline` (no MIME negotiation),
     /// matching the historical `{{CLIPBOARD}}` behavior. Not trimmed.
     fn read_clipboard_text(&self) -> String {
-        match Command::new("wl-paste").arg("--no-newline").output() {
+        match proc::output(
+            Command::new("wl-paste").arg("--no-newline"),
+            proc::CLIPBOARD,
+        ) {
             Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),
             _ => String::new(),
         }
@@ -349,7 +349,7 @@ impl X11Clipboard {
     /// Probe once for the clipboard CLI: `xclip` preferred, `xsel` fallback.
     fn detect() -> Self {
         Self {
-            clip: pick_x11_clip(have_tool("xclip"), have_tool("xsel")),
+            clip: pick_x11_clip(crate::setup::have("xclip"), crate::setup::have("xsel")),
         }
     }
 }
@@ -363,15 +363,17 @@ impl InjectBackend for X11Clipboard {
     /// any held modifier (so a held push-to-talk key doesn't corrupt the text);
     /// `--` stops option parsing so a leading `-` is typed literally.
     fn type_text(&self, text: &str) -> Result<(), InjectError> {
-        let status = Command::new("xdotool")
-            .args(["type", "--clearmodifiers", "--"])
-            .arg(text)
-            .status()
-            .map_err(|e| {
-                InjectError::Type(format!(
-                    "failed to spawn xdotool ({e}); is xdotool installed?"
-                ))
-            })?;
+        let status = proc::status(
+            Command::new("xdotool")
+                .args(["type", "--clearmodifiers", "--"])
+                .arg(text),
+            proc::TYPING,
+        )
+        .map_err(|e| {
+            InjectError::Type(format!(
+                "failed to run xdotool ({e}); is xdotool installed?"
+            ))
+        })?;
         if !status.success() {
             return Err(InjectError::Type(format!("xdotool exited with {status}")));
         }
@@ -432,10 +434,11 @@ impl InjectBackend for X11Clipboard {
                 feed_stdin(cmd, "xclip", b"")
             }
             X11Clip::Xsel => {
-                let status = Command::new("xsel")
-                    .args(["--clipboard", "--clear"])
-                    .status()
-                    .map_err(|e| format!("failed to spawn xsel: {e}"))?;
+                let status = proc::status(
+                    Command::new("xsel").args(["--clipboard", "--clear"]),
+                    proc::CLIPBOARD,
+                )
+                .map_err(|e| format!("failed to run xsel: {e}"))?;
                 if !status.success() {
                     return Err(format!("xsel --clear exited with {status}"));
                 }
@@ -458,18 +461,6 @@ fn pick_x11_clip(have_xclip: bool, have_xsel: bool) -> X11Clip {
     }
 }
 
-/// Is `tool` on PATH? (`command -v`, same probe as `setup::have`.)
-fn have_tool(tool: &str) -> bool {
-    Command::new("sh")
-        .arg("-c")
-        .arg(format!("command -v {tool}"))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
 // --- shared helpers ---------------------------------------------------------
 
 /// Whether a clipboard MIME type holds text we can capture and restore.
@@ -487,36 +478,19 @@ fn mime_is_text(mime: &str) -> bool {
 
 /// Run a command and return its stdout bytes, erroring on a non-zero exit.
 fn run_capture(program: &str, args: &[&str]) -> Result<Vec<u8>, String> {
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .map_err(|e| format!("failed to spawn {program}: {e}"))?;
+    let output = proc::output(Command::new(program).args(args), proc::CLIPBOARD)
+        .map_err(|e| format!("failed to run {program}: {e}"))?;
     if !output.status.success() {
         return Err(format!("{program} exited with {}", output.status));
     }
     Ok(output.stdout)
 }
 
-/// Spawn `cmd` with a piped stdin, write `bytes` to it, then wait for it to exit.
+/// Run `cmd` with `bytes` on its stdin (then closed), bounded by [`proc::CLIPBOARD`].
 /// `name` is the program name, used only in error messages.
 fn feed_stdin(mut cmd: Command, name: &str, bytes: &[u8]) -> Result<(), String> {
-    let mut child = cmd
-        .stdin(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("failed to spawn {name}: {e}"))?;
-    {
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| format!("{name} stdin unavailable"))?;
-        stdin
-            .write_all(bytes)
-            .map_err(|e| format!("failed to write to {name} stdin: {e}"))?;
-        // `stdin` drops here, closing the pipe so the tool sees EOF.
-    }
-    let status = child
-        .wait()
-        .map_err(|e| format!("failed to wait for {name}: {e}"))?;
+    let status = proc::with_stdin(&mut cmd, bytes, proc::CLIPBOARD)
+        .map_err(|e| format!("failed to run {name}: {e}"))?;
     if !status.success() {
         return Err(format!("{name} exited with {status}"));
     }

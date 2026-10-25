@@ -19,11 +19,13 @@ use crate::pipeline::{self, AppContext};
 use crate::state::{Status, now};
 use crate::stt::{SttClient, Transcription};
 
-/// What a recording session needs to post-process its transcript: the workflow
-/// the hotkey asked for and the window that was focused when capture began.
-struct StartCtx {
-    workflow: Option<String>,
-    window_class: Option<String>,
+/// One recording in progress: the live capture plus what its transcript needs for
+/// post-processing (the workflow the hotkey asked for and the window that was
+/// focused when capture began). Kept together so a later recording can never
+/// swap the context out from under a clip that is still transcribing.
+struct Session {
+    capture: Capture,
+    ctx: AppContext,
 }
 
 /// Shared application state wired into the socket server.
@@ -36,8 +38,11 @@ pub struct App {
     injector: Injector,
     /// Resolved display server: drives window-class detection and notify gating.
     server: DisplayServer,
-    capture: Mutex<Option<Capture>>,
-    start_ctx: Mutex<Option<StartCtx>>,
+    session: Mutex<Option<Session>>,
+    /// Serializes post-processing + injection across transcribe threads: a new
+    /// clip can finish while the previous one is still pasting, and two pastes
+    /// interleaving their clipboard save/restore would lose the user's clipboard.
+    inject_lock: Mutex<()>,
 }
 
 impl App {
@@ -58,8 +63,8 @@ impl App {
             blacklist: Arc::new(blacklist),
             injector,
             server,
-            capture: Mutex::new(None),
-            start_ctx: Mutex::new(None),
+            session: Mutex::new(None),
+            inject_lock: Mutex::new(()),
         }
     }
 
@@ -75,14 +80,14 @@ impl App {
     }
 
     fn start(self: &Arc<Self>, workflow: Option<String>) -> Resp {
-        let mut slot = self.capture.lock().expect("capture lock");
-        if let Some(cap) = slot.as_ref() {
-            if cap.auto_stopped() {
+        let mut slot = self.session.lock().expect("session lock");
+        if let Some(session) = slot.as_ref() {
+            if session.capture.auto_stopped() {
                 // A previous session hit the max-duration cap (too_long) and was
                 // never reclaimed by a stop/cancel. Tear it down (kills the orphan
                 // pw-record, joins the finished reader) and start fresh.
                 if let Some(stale) = slot.take() {
-                    stale.cancel();
+                    stale.capture.cancel();
                 }
             } else {
                 return Resp::err("already recording");
@@ -112,15 +117,15 @@ impl App {
         };
 
         match self.recorder.start(on_rms, on_too_long, on_silence) {
-            Ok(cap) => {
+            Ok(capture) => {
                 self.status.recording(0.0);
-                *slot = Some(cap);
                 // Snapshot the workflow + focused window now: this is the target
                 // the transcript will be post-processed for and pasted into.
-                *self.start_ctx.lock().expect("start_ctx lock") = Some(StartCtx {
+                let ctx = AppContext {
                     workflow,
                     window_class: pipeline::active_window_class(self.server),
-                });
+                };
+                *slot = Some(Session { capture, ctx });
                 info!("recording started");
                 Resp::ok()
             }
@@ -129,18 +134,18 @@ impl App {
     }
 
     fn stop(self: &Arc<Self>) -> Resp {
-        let cap = match self.capture.lock().expect("capture lock").take() {
-            Some(c) => c,
-            None => return Resp::err("not recording"),
+        let Some(Session { capture, ctx }) = self.session.lock().expect("session lock").take()
+        else {
+            return Resp::err("not recording");
         };
 
         // The max-duration case already reported `too_long` via on_too_long.
-        if cap.auto_stopped() {
-            cap.cancel();
+        if capture.auto_stopped() {
+            capture.cancel();
             return Resp::ok();
         }
 
-        match cap.finish(self.cfg.audio.min_samples()) {
+        match capture.finish(self.cfg.audio.min_samples()) {
             None => {
                 // Clip too short: discard silently, back to idle.
                 self.status.idle();
@@ -149,7 +154,7 @@ impl App {
             Some(buf) => {
                 self.status.transcribing();
                 let app = Arc::clone(self);
-                std::thread::spawn(move || app.transcribe(buf));
+                std::thread::spawn(move || app.transcribe(buf, ctx));
                 Resp::ok()
             }
         }
@@ -159,30 +164,29 @@ impl App {
     /// was said, mirroring the explicit `stop` path. Runs on its own thread.
     /// A no-op if an explicit stop/cancel already reclaimed the capture.
     fn auto_finish(self: Arc<Self>) {
-        let cap = match self.capture.lock().expect("capture lock").take() {
-            Some(c) => c,
-            None => return,
+        let Some(Session { capture, ctx }) = self.session.lock().expect("session lock").take()
+        else {
+            return;
         };
-        match cap.finish(self.cfg.audio.min_samples()) {
+        match capture.finish(self.cfg.audio.min_samples()) {
             None => self.status.idle(),
             Some(buf) => {
                 self.status.transcribing();
-                self.transcribe(buf);
+                self.transcribe(buf, ctx);
             }
         }
     }
 
     fn cancel(&self) -> Resp {
-        if let Some(cap) = self.capture.lock().expect("capture lock").take() {
-            cap.cancel();
+        if let Some(session) = self.session.lock().expect("session lock").take() {
+            session.capture.cancel();
         }
-        *self.start_ctx.lock().expect("start_ctx lock") = None;
         self.status.idle();
         Resp::ok()
     }
 
     /// Off-thread tail of `stop`: transcribe, filter, (inject), publish outcome.
-    fn transcribe(self: Arc<Self>, buf: Vec<i16>) {
+    fn transcribe(self: Arc<Self>, buf: Vec<i16>, ctx: AppContext) {
         let transcription = match self.stt.transcribe(&buf) {
             Ok(t) => t,
             Err(e) => {
@@ -216,16 +220,9 @@ impl App {
                 // Post-process for the session's target window (corrections,
                 // snippets, then the selected AI workflow). Never fails: LLM
                 // errors fall back to the raw transcript inside `process`.
-                let ctx = {
-                    let guard = self.start_ctx.lock().expect("start_ctx lock");
-                    guard
-                        .as_ref()
-                        .map(|c| AppContext {
-                            workflow: c.workflow.clone(),
-                            window_class: c.window_class.clone(),
-                        })
-                        .unwrap_or_default()
-                };
+                // Held through injection so overlapping clips paste one at a time,
+                // in order.
+                let _inject = self.inject_lock.lock().expect("inject lock");
                 let text = pipeline::process(text, &self.cfg, &ctx, self.injector.backend());
                 info!(chars = text.len(), lang = ?transcription.language, "transcript accepted");
                 match self.injector.inject(&text) {
@@ -273,7 +270,9 @@ fn should_notify(mode: &str, server: DisplayServer) -> bool {
 }
 
 /// Append one transcription record (accepted or dropped) to `transcripts.jsonl`
-/// under `$XDG_STATE_HOME/whispy`, for offline calibration of the filter.
+/// under `$XDG_STATE_HOME/whispy`, for offline calibration of the filter. The file
+/// holds dictated text, so it is capped: past [`config::TRANSCRIPTS_MAX_BYTES`] it
+/// rotates to `transcripts.jsonl.1`, replacing the older generation.
 fn log_transcript(t: &Transcription, drop_reason: Option<&str>) {
     use std::io::Write;
 
@@ -288,6 +287,9 @@ fn log_transcript(t: &Transcription, drop_reason: Option<&str>) {
     });
 
     let path = config::state_dir().join("transcripts.jsonl");
+    if let Err(e) = config::rotate_if_larger(&path, config::TRANSCRIPTS_MAX_BYTES) {
+        warn!(error = %e, "failed to rotate transcript log");
+    }
     let result = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -300,11 +302,13 @@ fn log_transcript(t: &Transcription, drop_reason: Option<&str>) {
 
 /// Best-effort desktop notification for hard failures (not routine filter drops).
 fn notify(summary: &str, body: &str) {
-    let _ = std::process::Command::new("notify-send")
-        .arg("--app-name=whispy")
-        .arg(summary)
-        .arg(body)
-        .status();
+    let _ = crate::proc::status(
+        std::process::Command::new("notify-send")
+            .arg("--app-name=whispy")
+            .arg(summary)
+            .arg(body),
+        crate::proc::PROBE,
+    );
 }
 
 #[cfg(test)]

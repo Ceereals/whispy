@@ -424,37 +424,7 @@ fn install_ydotoold() -> Result<(), String> {
         return Ok(());
     }
 
-    // If systemd already knows a ydotoold unit (e.g. a packaged /usr unit), keep it.
-    let known = Command::new("systemctl")
-        .args(["--user", "cat", "ydotoold.service"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-
-    if !known {
-        let dir = config::expand("~/.config/systemd/user");
-        fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        let unit = dir.join("ydotoold.service");
-        fs::write(&unit, ydotoold_unit_contents())
-            .map_err(|e| format!("{}: {e}", unit.display()))?;
-        println!("  wrote {}", unit.display());
-        exec(Command::new("systemctl").args(["--user", "daemon-reload"]))?;
-    } else {
-        println!("  using the ydotoold unit already known to systemd");
-    }
-
-    // Best-effort: a headless/SSH session may have no user manager.
-    if exec(Command::new("systemctl").args(["--user", "enable", "--now", "ydotoold.service"]))
-        .is_err()
-    {
-        println!("  could not enable ydotoold now — start it from your session with:");
-        println!("    systemctl --user enable --now ydotoold");
-    } else {
-        println!("  enabled and started ydotoold");
-    }
-    Ok(())
+    install_user_unit("ydotoold", ydotoold_unit_contents())
 }
 
 fn ydotoold_unit_contents() -> &'static str {
@@ -505,35 +475,40 @@ fn seed(path: &Path, contents: &str) -> Result<(), String> {
 
 fn install_systemd() -> Result<(), String> {
     println!("\n==> systemd user service");
-    // If a unit is already visible to systemd (e.g. a packaged /usr unit), keep it.
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    install_user_unit("whispy-daemon", &unit_contents(&exe))
+}
+
+/// Install `<name>.service` as a user unit, unless systemd already knows one (e.g.
+/// a packaged /usr unit, which is kept), then enable and start it. Enabling is
+/// best-effort: a headless/SSH session may have no user manager, so a failure
+/// prints the command to run from the graphical session instead.
+fn install_user_unit(name: &str, contents: &str) -> Result<(), String> {
+    let service = format!("{name}.service");
     let known = Command::new("systemctl")
-        .args(["--user", "cat", "whispy-daemon.service"])
+        .args(["--user", "cat", &service])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
 
-    if !known {
-        let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    if known {
+        println!("  using the {name} unit already known to systemd");
+    } else {
         let dir = config::expand("~/.config/systemd/user");
         fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        let unit = dir.join("whispy-daemon.service");
-        fs::write(&unit, unit_contents(&exe)).map_err(|e| format!("{}: {e}", unit.display()))?;
+        let unit = dir.join(&service);
+        fs::write(&unit, contents).map_err(|e| format!("{}: {e}", unit.display()))?;
         println!("  wrote {}", unit.display());
         exec(Command::new("systemctl").args(["--user", "daemon-reload"]))?;
-    } else {
-        println!("  using the unit already known to systemd");
     }
 
-    // Best-effort: a headless/SSH session may have no user manager.
-    if exec(Command::new("systemctl").args(["--user", "enable", "--now", "whispy-daemon.service"]))
-        .is_err()
-    {
-        println!("  could not enable the service now — start it from your session with:");
-        println!("    systemctl --user enable --now whispy-daemon");
+    if exec(Command::new("systemctl").args(["--user", "enable", "--now", &service])).is_err() {
+        println!("  could not enable {name} now — start it from your session with:");
+        println!("    systemctl --user enable --now {name}");
     } else {
-        println!("  enabled and started whispy-daemon");
+        println!("  enabled and started {name}");
     }
     Ok(())
 }
@@ -595,34 +570,7 @@ fn install_quickshell(run_service: bool) -> Result<(), String> {
 /// Install and enable the standalone pill service (`quickshell -c whispy`), so the
 /// overlay runs without the user editing their own Quickshell shell.
 fn install_pill_service() -> Result<(), String> {
-    let known = Command::new("systemctl")
-        .args(["--user", "cat", "whispy-pill.service"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-
-    if !known {
-        let dir = config::expand("~/.config/systemd/user");
-        fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        let unit = dir.join("whispy-pill.service");
-        fs::write(&unit, pill_unit_contents()).map_err(|e| format!("{}: {e}", unit.display()))?;
-        println!("  wrote {}", unit.display());
-        exec(Command::new("systemctl").args(["--user", "daemon-reload"]))?;
-    } else {
-        println!("  using the whispy-pill unit already known to systemd");
-    }
-
-    if exec(Command::new("systemctl").args(["--user", "enable", "--now", "whispy-pill.service"]))
-        .is_err()
-    {
-        println!("  could not enable the pill now — start it from your session with:");
-        println!("    systemctl --user enable --now whispy-pill");
-    } else {
-        println!("  enabled and started whispy-pill");
-    }
-    Ok(())
+    install_user_unit("whispy-pill", pill_unit_contents())
 }
 
 fn pill_unit_contents() -> &'static str {

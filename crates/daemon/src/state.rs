@@ -43,6 +43,17 @@ impl StatePublisher {
     }
 }
 
+/// A snapshot with no error fields, stamped now.
+fn plain(state: State, rms: f32) -> StateSnapshot {
+    StateSnapshot {
+        state,
+        rms,
+        error_kind: None,
+        error_message: None,
+        timestamp: now(),
+    }
+}
+
 /// Current Unix time in fractional seconds.
 pub fn now() -> f64 {
     SystemTime::now()
@@ -94,13 +105,7 @@ impl Status {
 
     /// Set a non-error state with the given RMS. Returns the new generation.
     pub fn set(&self, state: State, rms: f32) -> u64 {
-        self.write(StateSnapshot {
-            state,
-            rms,
-            error_kind: None,
-            error_message: None,
-            timestamp: now(),
-        })
+        self.write(plain(state, rms))
     }
 
     pub fn recording(&self, rms: f32) {
@@ -134,15 +139,21 @@ impl Status {
     }
 
     fn write(&self, snapshot: StateSnapshot) -> u64 {
+        let mut guard = self.shared.lock().expect("state lock");
+        self.write_locked(&mut guard, snapshot)
+    }
+
+    /// Update the snapshot and publish it while the caller holds the `shared` lock.
+    /// Publishing under the lock matters: the RMS reader, socket, transcribe and
+    /// revert threads all write, every publish goes through the same `.tmp` path,
+    /// and unserialized writers could rename a half-written file into place or
+    /// land an older state on disk after a newer one.
+    fn write_locked(&self, guard: &mut StateSnapshot, snapshot: StateSnapshot) -> u64 {
         let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
-        let prev_state = {
-            let mut guard = self.shared.lock().expect("state lock");
-            let prev = guard.state;
-            *guard = snapshot.clone();
-            prev
-        };
-        if self.should_publish(snapshot.state, prev_state)
-            && let Err(e) = self.publisher.publish(&snapshot)
+        let prev_state = guard.state;
+        *guard = snapshot;
+        if self.should_publish(guard.state, prev_state)
+            && let Err(e) = self.publisher.publish(guard)
         {
             warn!(error = %e, "failed to publish state.json");
         }
@@ -172,8 +183,11 @@ impl Status {
         let this = self.clone();
         std::thread::spawn(move || {
             std::thread::sleep(FLASH);
+            // Check the generation under the same lock writers take, so a state
+            // published between the check and the write can't be clobbered.
+            let mut guard = this.shared.lock().expect("state lock");
             if this.generation.load(Ordering::Acquire) == generation {
-                this.idle();
+                this.write_locked(&mut guard, plain(State::Idle, 0.0));
             }
         });
     }
@@ -259,6 +273,41 @@ mod tests {
         status.recording(0.3); // bumps the generation past `g`
         std::thread::sleep(FLASH + Duration::from_millis(150));
         assert_eq!(status.snapshot().state, State::Recording);
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn concurrent_writers_leave_the_file_matching_memory() {
+        // The RMS reader, socket and transcribe threads all write at once. Every
+        // publish shares one tmp path, so they must be serialized: the file always
+        // parses, and once the writers stop it shows the last in-memory state.
+        let (path, status) = status_with(0);
+        let writers: Vec<_> = (0..16)
+            .map(|i| {
+                let status = status.clone();
+                std::thread::spawn(move || {
+                    for n in 0..500 {
+                        if (i + n) % 2 == 0 {
+                            status.recording(0.5);
+                        } else {
+                            status.transcribing();
+                        }
+                    }
+                })
+            })
+            .collect();
+        for w in writers {
+            w.join().expect("writer thread");
+        }
+
+        let on_disk: StateSnapshot =
+            serde_json::from_slice(&std::fs::read(&path).expect("state.json exists"))
+                .expect("state.json parses");
+        assert_eq!(on_disk.state, status.snapshot().state);
+        // serde_json's default float parsing can be off by an ULP; the writers'
+        // timestamps differ by far more than that.
+        assert!((on_disk.timestamp - status.snapshot().timestamp).abs() < 1e-6);
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }

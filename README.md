@@ -135,7 +135,9 @@ State & IPC paths (everything is namespaced `whispy`):
 
 - socket — `$XDG_RUNTIME_DIR/whispy/whispy.sock`
 - state — `$XDG_RUNTIME_DIR/whispy/state.json` (atomic writes, ≤20 Hz) ← the pill reads this
-- logs — `$XDG_STATE_HOME/whispy/{daemon.log,whisper-server.log}` (JSON lines)
+- logs — `$XDG_STATE_HOME/whispy/{daemon.log,whisper-server.log}` (JSON lines) and
+  `transcripts.jsonl` (every clip's text, for `whispy-daemon stats`); each is capped
+  (10 MB, or 5 MB for transcripts) and keeps one rotated `.1` generation
 
 ## Configuration
 

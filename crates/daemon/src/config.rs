@@ -303,6 +303,15 @@ impl Config {
             }
         }
 
+        // The clip goes to whisper as a WAV that is always labeled 16 kHz mono
+        // (whisper's native input); any other capture format would be misread.
+        if self.audio.rate != 16000 || self.audio.channels != 1 {
+            return Err(format!(
+                "audio.rate must be 16000 and audio.channels 1 (whisper's input format), got {} Hz / {} ch",
+                self.audio.rate, self.audio.channels
+            ));
+        }
+
         match self.injection.mode.as_str() {
             "paste" => {
                 if self.injection.paste_keys.trim().is_empty() {
@@ -421,6 +430,31 @@ pub fn state_dir() -> PathBuf {
     base.join("whispy")
 }
 
+/// Size caps for the files the daemon appends to in [`state_dir`]. Each keeps one
+/// rotated generation (`<name>.1`), so disk use stays under twice the cap.
+pub const DAEMON_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
+pub const WHISPER_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
+pub const TRANSCRIPTS_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+/// The previous generation of a rotated file: `<path>.1`.
+pub fn rotated(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".1");
+    PathBuf::from(name)
+}
+
+/// If `path` has grown past `max_bytes`, move it to `<path>.1` (replacing any older
+/// generation) so the next write starts a fresh file. Best-effort: a missing
+/// file is not an error, and the caller just keeps appending if the rename fails.
+pub fn rotate_if_larger(path: &Path, max_bytes: u64) -> std::io::Result<()> {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.len() > max_bytes => std::fs::rename(path, rotated(path)),
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 /// Expand a leading `~/` to `$HOME`.
 pub(crate) fn expand(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/")
@@ -434,6 +468,32 @@ pub(crate) fn expand(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rotate_if_larger_moves_only_oversized_files() {
+        let dir = std::env::temp_dir().join(format!("whispy-rotate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("transcripts.jsonl");
+
+        // Missing file: nothing to do.
+        rotate_if_larger(&log, 4).expect("missing file is fine");
+
+        // At or under the cap: left alone.
+        std::fs::write(&log, b"1234").unwrap();
+        rotate_if_larger(&log, 4).unwrap();
+        assert!(log.exists());
+        assert!(!rotated(&log).exists());
+
+        // Over the cap: moved to .1, replacing an older generation.
+        std::fs::write(rotated(&log), b"old").unwrap();
+        std::fs::write(&log, b"12345").unwrap();
+        rotate_if_larger(&log, 4).unwrap();
+        assert!(!log.exists());
+        assert_eq!(std::fs::read(rotated(&log)).unwrap(), b"12345");
+        assert_eq!(rotated(&log), dir.join("transcripts.jsonl.1"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn embedded_defaults_parse() {
@@ -510,6 +570,14 @@ mod tests {
 
     #[test]
     fn validate_rejects_bad_fields() {
+        let (mut cfg, _g) = valid_config();
+        cfg.audio.rate = 48000;
+        assert!(cfg.validate().is_err());
+
+        let (mut cfg, _g) = valid_config();
+        cfg.audio.channels = 2;
+        assert!(cfg.validate().is_err());
+
         let (mut cfg, _g) = valid_config();
         cfg.injection.mode = "nope".into();
         assert!(cfg.validate().is_err());

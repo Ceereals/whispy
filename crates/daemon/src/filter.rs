@@ -33,10 +33,15 @@ impl Hallucinations {
     /// Load from a TOML file of the form `phrases = [ ... ]`.
     pub fn load(path: &Path) -> std::io::Result<Self> {
         let text = std::fs::read_to_string(path)?;
-        let parsed: HallucinationsFile = toml::from_str(&text)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-        let count = parsed.phrases.len();
-        tracing::debug!(count, path = %path.display(), "loaded hallucination blacklist");
+        let list = Self::parse(&text)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        tracing::debug!(count = list.phrases.len(), path = %path.display(), "loaded hallucination blacklist");
+        Ok(list)
+    }
+
+    /// Parse TOML text of the form `phrases = [ ... ]` (the file or the built-in list).
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let parsed: HallucinationsFile = toml::from_str(text).map_err(|e| e.to_string())?;
         Ok(Self::from_phrases(parsed.phrases))
     }
 
@@ -150,6 +155,19 @@ fn is_punctuation(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn built_in_blacklist_parses_and_is_not_empty() {
+        // main falls back to this list (and `expect`s it) when the file is missing.
+        let list = Hallucinations::parse(crate::config::default_hallucinations_toml())
+            .expect("embedded hallucinations parse");
+        assert!(!list.phrases.is_empty());
+    }
+
+    #[test]
+    fn parse_rejects_malformed_toml() {
+        assert!(Hallucinations::parse("phrases = [").is_err());
+    }
 
     fn cfg() -> Filter {
         Filter {

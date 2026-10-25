@@ -84,13 +84,16 @@ impl SttClient {
     pub fn new(cfg: &crate::config::Stt, prompt: Option<String>) -> Self {
         let prompt = prompt.filter(|p| !p.trim().is_empty());
         Self {
-            base_url: format!("http://{}:{}", cfg.host, cfg.port),
+            base_url: base_url(&cfg.host, cfg.port),
             language: cfg.language.clone(),
             prompt,
             // Non-2xx responses come back as `Ok` so the error body can be reported.
+            // whisper-server is always local: never route audio through an
+            // environment proxy (ureq 3 honors HTTP(S)_PROXY by default).
             agent: ureq::Agent::config_builder()
                 .timeout_global(Some(Duration::from_secs(cfg.timeout_secs)))
                 .http_status_as_error(false)
+                .proxy(None)
                 .build()
                 .into(),
         }
@@ -135,6 +138,15 @@ impl SttClient {
             serde_json::from_str(&text).map_err(|e| SttError::Parse(e.to_string()))?;
 
         Ok(aggregate(parsed))
+    }
+}
+
+/// `http://host:port`, bracketing an IPv6 literal host (`[::1]`).
+fn base_url(host: &str, port: u16) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("http://[{host}]:{port}")
+    } else {
+        format!("http://{host}:{port}")
     }
 }
 
@@ -237,6 +249,14 @@ fn normalize_whitespace(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base_url_brackets_ipv6_hosts() {
+        assert_eq!(base_url("127.0.0.1", 8181), "http://127.0.0.1:8181");
+        assert_eq!(base_url("localhost", 8181), "http://localhost:8181");
+        assert_eq!(base_url("::1", 8181), "http://[::1]:8181");
+        assert_eq!(base_url("[::1]", 8181), "http://[::1]:8181");
+    }
 
     #[test]
     fn encodes_riff_wav() {

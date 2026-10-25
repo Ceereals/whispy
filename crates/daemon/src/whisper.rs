@@ -7,8 +7,9 @@
 //! every transcription would fail (systemd only restarts us if *we* exit, not the
 //! child).
 
-use std::fs::File;
-use std::net::TcpStream;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
@@ -55,7 +56,13 @@ impl WhisperServer {
             ));
         }
 
-        let log = File::create(log_path)?;
+        // Append, don't truncate: the monitor restarts a crashed server within
+        // seconds, and truncating would wipe the output explaining the crash.
+        let mut log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)?;
+        writeln!(log, "--- whispy: starting whisper-server ---")?;
         let errlog = log.try_clone()?;
         info!(bin = %bin.display(), model = %model.display(), port = cfg.port, "spawning whisper-server");
         Command::new(&bin)
@@ -74,20 +81,27 @@ impl WhisperServer {
     }
 
     /// Block until the HTTP port accepts a TCP connection, or `timeout` elapses.
-    /// Returns early if `shutdown` is set. The child loads the model before it
-    /// starts listening, so a successful connect means it is ready to serve.
-    pub fn wait_ready(&self, timeout: Duration, shutdown: &Arc<AtomicBool>) -> bool {
-        let addr = format!("{}:{}", self.cfg.host, self.cfg.port);
-        let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline {
-            if shutdown.load(Ordering::Relaxed) {
+    /// Returns early if `shutdown` is set or the child exits (a bad model or flag
+    /// kills it at once; no point waiting out the timeout). The child loads the
+    /// model before it starts listening, so a successful connect means it is ready.
+    pub fn wait_ready(&mut self, timeout: Duration, shutdown: &Arc<AtomicBool>) -> bool {
+        // Resolve rather than parse, so `localhost` and bare IPv6 hosts work.
+        let addrs: Vec<SocketAddr> = match (self.cfg.host.as_str(), self.cfg.port).to_socket_addrs()
+        {
+            Ok(addrs) => addrs.collect(),
+            Err(e) => {
+                warn!(host = %self.cfg.host, error = %e, "cannot resolve whisper-server host");
                 return false;
             }
-            if TcpStream::connect_timeout(
-                &addr.parse().expect("valid host:port"),
-                Duration::from_millis(500),
-            )
-            .is_ok()
+        };
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if shutdown.load(Ordering::Relaxed) || !self.is_alive() {
+                return false;
+            }
+            if addrs
+                .iter()
+                .any(|a| TcpStream::connect_timeout(a, Duration::from_millis(500)).is_ok())
             {
                 return true;
             }
@@ -152,5 +166,30 @@ mod tests {
         // Give the child a moment to exit.
         std::thread::sleep(Duration::from_millis(100));
         assert!(!server.is_alive());
+    }
+
+    #[test]
+    fn wait_ready_returns_early_when_the_child_dies() {
+        // A server that exits at once (corrupt model, bad flag) must not stall
+        // startup for the whole ready timeout. `localhost` must resolve, not panic.
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg("exit 1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn test child");
+        let mut cfg = test_cfg();
+        cfg.host = "localhost".to_string();
+        cfg.port = 1; // nothing listens here
+        let mut server = WhisperServer {
+            child,
+            cfg,
+            log_path: PathBuf::from("/dev/null"),
+        };
+        let started = Instant::now();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        assert!(!server.wait_ready(Duration::from_secs(30), &shutdown));
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }

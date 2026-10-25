@@ -21,6 +21,7 @@ backend = "auto"
 timeout_secs = 30        # hard cap on one /inference request (guards against a hung GPU)
 
 [audio]
+# whisper's input format; validated at startup, don't change.
 rate = 16000
 channels = 1
 max_clip_secs = 60.0      # auto-stop with error: too_long beyond this
