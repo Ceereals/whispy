@@ -7,9 +7,15 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use whispy_common::{Cmd, Resp, State};
+
+/// Give up on a daemon that accepts but never answers, so blocked clients don't
+/// pile up behind a Hyprland bind. Longer than the daemon's own idle-connection
+/// timeout, since it serves one connection at a time.
+const TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Parser, Debug)]
 #[expect(
@@ -101,6 +107,8 @@ fn toggle(socket: &Path, workflow: Option<String>) -> std::io::Result<Resp> {
 
 fn send(socket: &Path, cmd: Cmd) -> std::io::Result<Resp> {
     let stream = UnixStream::connect(socket)?;
+    stream.set_read_timeout(Some(TIMEOUT))?;
+    stream.set_write_timeout(Some(TIMEOUT))?;
     let mut writer = &stream;
     writeln!(
         writer,

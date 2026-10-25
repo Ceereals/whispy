@@ -64,21 +64,25 @@ pub fn summarize(lines: impl Iterator<Item = String>) -> Summary {
     s
 }
 
-/// Read `transcripts.jsonl` from the state dir and print the summary.
+/// Read `transcripts.jsonl` (and its rotated `.1` generation, oldest first) from
+/// the state dir and print the summary.
 pub fn run() -> ExitCode {
     let path = config::state_dir().join("transcripts.jsonl");
-    let file = match std::fs::File::open(&path) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!(
-                "whispy-daemon stats: no transcript log at {} ({e})",
-                path.display()
-            );
-            return ExitCode::FAILURE;
-        }
-    };
+    let files: Vec<std::fs::File> = [config::rotated(&path), path.clone()]
+        .iter()
+        .filter_map(|p| std::fs::File::open(p).ok())
+        .collect();
+    if files.is_empty() {
+        eprintln!(
+            "whispy-daemon stats: no transcript log at {}",
+            path.display()
+        );
+        return ExitCode::FAILURE;
+    }
 
-    let lines = BufReader::new(file).lines().map_while(Result::ok);
+    let lines = files
+        .into_iter()
+        .flat_map(|f| BufReader::new(f).lines().map_while(Result::ok));
     let s = summarize(lines);
 
     println!("transcripts: {}  ({})", s.total, path.display());

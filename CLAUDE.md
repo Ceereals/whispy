@@ -59,7 +59,7 @@ Cargo workspace (`resolver = "3"`, `edition = "2024"`, MSRV `rust-version = 1.88
 | Module | Responsibility |
 |--------|----------------|
 | `main.rs` | CLI args (clap), config load, JSON logging init, signal handling, wires everything, runs the socket server. Also routes the `setup` subcommand. |
-| `app.rs` | `App` — maps socket commands to the capture→transcribe→filter→inject flow; owns the active capture and per-recording `StartCtx`. |
+| `app.rs` | `App` — maps socket commands to the capture→transcribe→filter→inject flow; owns the active `Session` (capture + its `AppContext`, handed to the transcribe thread) and an inject lock so overlapping clips paste one at a time. |
 | `server.rs` | Unix-socket server: line-based JSON (`Cmd` in, `Resp` out), polls a shutdown flag for clean SIGTERM exit. |
 | `audio.rs` | PipeWire capture via `pw-record` (raw s16le mono), RMS metering, gain, clip limits, trailing-silence auto-stop, peak normalization. |
 | `whisper.rs` | Spawns and supervises the `whisper-server` child; waits for its port; a monitor thread in `main` polls `is_alive` and `restart`s it if it dies; kills it on shutdown. |
@@ -67,6 +67,7 @@ Cargo workspace (`resolver = "3"`, `edition = "2024"`, MSRV `rust-version = 1.88
 | `filter.rs` | Hallucination filter: confidence thresholds → punctuation-only rejection → exact + fuzzy (`strsim`) blacklist match. |
 | `pipeline.rs` | Post-transcription text pipeline: corrections → snippets → AI workflow selection + LLM transform. Never fails (falls back to raw text). |
 | `llm.rs` | Minimal OpenAI-compatible chat client (local ollama by default) for AI workflows. |
+| `proc.rs` | Deadline-bounded subprocess helpers (`output`/`status`/`with_stdin`) used for every runtime tool call (clipboard, typing, `ydotool`, window-class probes) so a wedged tool can't hang a thread. |
 | `inject.rs` | Text injection: `paste` mode (`wl-copy` + `ydotool` Ctrl+V, clipboard save/restore) or `type` mode (`wtype`). |
 | `state.rs` | `StatePublisher` writes `state.json` atomically (tmp + rename); `Status` keeps in-memory + on-disk snapshot in sync and flashes transient states. |
 | `config.rs` | TOML config; built-in defaults embedded via `include_str!`; `Config::validate` rejects bad config at startup. |
@@ -96,6 +97,8 @@ on it, and the QML pill reads the `state.json` shape.
 - Tilde paths (`~/...`) in config are expanded by the daemon.
 - Logs: JSON lines to `$XDG_STATE_HOME/whispy/daemon.log`; level via `RUST_LOG`
   (default `info`). whisper-server output goes to `whisper-server.log` in the state dir.
+  Both logs and `transcripts.jsonl` are size-capped via `config::rotate_if_larger`
+  (one `.1` generation); `stats` reads both generations.
 
 If you add a config field, update both the struct in `config.rs` and
 `config/default.toml` (with an explanatory comment), and keep `#[serde(default)]`
@@ -136,7 +139,8 @@ binaries (not whisper-server/model), publish a GitHub release, and push to the A
 - Tests are inline `#[cfg(test)] mod tests` in the same file. Favor pure, testable
   helpers (e.g. `pick_workflow`, `pick_wayland_socket`) factored out of side-effecting code.
 - External tools are invoked as subprocesses: `pw-record`, `wl-copy`/`wl-paste`,
-  `ydotool`, `wtype`, `whisper-server`. Best-effort steps log via `tracing::warn!` and
+  `ydotool`, `wtype`, `whisper-server`. Short-lived runtime calls go through `proc` with a
+  timeout, never a bare `.output()`/`.status()`. Best-effort steps log via `tracing::warn!` and
   continue; only the critical step is a hard error.
 - **Lints** are configured once in `[workspace.lints]` (root `Cargo.toml`; each crate
   opts in with `[lints] workspace = true`) and tuned in `clippy.toml`. Clippy
@@ -165,7 +169,8 @@ binaries (not whisper-server/model), publish a GitHub release, and push to the A
 - A systemd user service started before the compositor may lack `WAYLAND_DISPLAY`;
   `main.rs` discovers the lowest-numbered `wayland-N` socket so injection tools work.
 - `state.json` is written atomically (tmp + rename) — never write it in place; the UI
-  polls it and must never see a half-written file.
+  polls it and must never see a half-written file. Several threads write state, and
+  all publishes share one `.tmp` path, so `Status` publishes while holding its lock.
 - whisper-server is launched/supervised by the daemon and respawned in-process by a monitor
   thread (`main.rs`) if it dies. Don't shell out to start it elsewhere. STT requests are
   bounded by `stt.timeout_secs` so a hung server surfaces an error instead of stalling.
