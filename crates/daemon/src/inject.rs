@@ -349,7 +349,7 @@ impl X11Clipboard {
     /// Probe once for the clipboard CLI: `xclip` preferred, `xsel` fallback.
     fn detect() -> Self {
         Self {
-            clip: pick_x11_clip(have_tool("xclip"), have_tool("xsel")),
+            clip: pick_x11_clip(crate::setup::have("xclip"), crate::setup::have("xsel")),
         }
     }
 }
@@ -456,18 +456,6 @@ fn pick_x11_clip(have_xclip: bool, have_xsel: bool) -> X11Clip {
     } else {
         X11Clip::None
     }
-}
-
-/// Is `tool` on PATH? (`command -v`, same probe as `setup::have`.)
-fn have_tool(tool: &str) -> bool {
-    Command::new("sh")
-        .arg("-c")
-        .arg(format!("command -v {tool}"))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
 }
 
 // --- shared helpers ---------------------------------------------------------

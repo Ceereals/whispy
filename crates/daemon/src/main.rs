@@ -245,14 +245,8 @@ fn load_blacklist(cfg: &Config) -> Hallucinations {
         }
     }
 
-    #[derive(serde::Deserialize)]
-    struct Embedded {
-        #[serde(default)]
-        phrases: Vec<String>,
-    }
-    let embedded: Embedded = toml::from_str(config::default_hallucinations_toml())
-        .expect("embedded hallucinations parse");
-    Hallucinations::from_phrases(embedded.phrases)
+    Hallucinations::parse(config::default_hallucinations_toml())
+        .expect("embedded hallucinations parse")
 }
 
 /// Ensure the display-server env var the injection tools need is set, so a systemd
