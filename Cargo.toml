@@ -5,7 +5,7 @@ members = ["crates/common", "crates/daemon", "crates/client"]
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "MIT"
 authors = ["Riccardo Romoli <romoliriccardo.rr@gmail.com>"]
 description = "System-wide push-to-talk dictation for Hyprland (Wayland), powered by whisper.cpp (Vulkan)."
