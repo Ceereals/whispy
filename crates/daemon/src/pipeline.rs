@@ -8,6 +8,7 @@ use tracing::{info, warn};
 use crate::config::{Config, Workflow};
 use crate::display::DisplayServer;
 use crate::inject::InjectBackend;
+use crate::proc;
 
 /// Context for one transcript: which workflow was requested and the focused window.
 #[derive(Debug, Clone, Default)]
@@ -185,7 +186,7 @@ fn resolve_placeholders(s: &str, backend: &dyn InjectBackend) -> String {
 
 /// Format the current time via `date FMT`; empty string on any failure.
 fn shell_date(fmt: &str) -> String {
-    match Command::new("date").arg(fmt).output() {
+    match proc::output(Command::new("date").arg(fmt), proc::PROBE) {
         Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
         _ => String::new(),
     }
@@ -210,10 +211,11 @@ pub fn active_window_class(server: DisplayServer) -> Option<String> {
 
 /// Hyprland: focused window class via `hyprctl activewindow -j`.
 fn hyprctl_class() -> Option<String> {
-    let out = Command::new("hyprctl")
-        .args(["activewindow", "-j"])
-        .output()
-        .ok()?;
+    let out = proc::output(
+        Command::new("hyprctl").args(["activewindow", "-j"]),
+        proc::PROBE,
+    )
+    .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -224,10 +226,11 @@ fn hyprctl_class() -> Option<String> {
 /// Sway / wlroots: focused node's `app_id` (Wayland-native) or
 /// `window_properties.class` (XWayland) from `swaymsg -t get_tree`.
 fn swaymsg_class() -> Option<String> {
-    let out = Command::new("swaymsg")
-        .args(["-t", "get_tree"])
-        .output()
-        .ok()?;
+    let out = proc::output(
+        Command::new("swaymsg").args(["-t", "get_tree"]),
+        proc::PROBE,
+    )
+    .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -264,10 +267,11 @@ fn focused_node(node: &serde_json::Value) -> Option<&serde_json::Value> {
 
 /// X11: focused window class via `xdotool getactivewindow getwindowclassname`.
 fn xdotool_class() -> Option<String> {
-    let out = Command::new("xdotool")
-        .args(["getactivewindow", "getwindowclassname"])
-        .output()
-        .ok()?;
+    let out = proc::output(
+        Command::new("xdotool").args(["getactivewindow", "getwindowclassname"]),
+        proc::PROBE,
+    )
+    .ok()?;
     if !out.status.success() {
         return None;
     }

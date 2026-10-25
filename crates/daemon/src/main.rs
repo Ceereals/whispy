@@ -12,6 +12,7 @@ mod filter;
 mod inject;
 mod llm;
 mod pipeline;
+mod proc;
 mod server;
 mod setup;
 mod state;

@@ -297,11 +297,13 @@ fn log_transcript(t: &Transcription, drop_reason: Option<&str>) {
 
 /// Best-effort desktop notification for hard failures (not routine filter drops).
 fn notify(summary: &str, body: &str) {
-    let _ = std::process::Command::new("notify-send")
-        .arg("--app-name=whispy")
-        .arg(summary)
-        .arg(body)
-        .status();
+    let _ = crate::proc::status(
+        std::process::Command::new("notify-send")
+            .arg("--app-name=whispy")
+            .arg(summary)
+            .arg(body),
+        crate::proc::PROBE,
+    );
 }
 
 #[cfg(test)]
