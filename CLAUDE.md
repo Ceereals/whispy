@@ -67,6 +67,7 @@ Cargo workspace (`resolver = "3"`, `edition = "2024"`, MSRV `rust-version = 1.88
 | `filter.rs` | Hallucination filter: confidence thresholds → punctuation-only rejection → exact + fuzzy (`strsim`) blacklist match. |
 | `pipeline.rs` | Post-transcription text pipeline: corrections → snippets → AI workflow selection + LLM transform. Never fails (falls back to raw text). |
 | `llm.rs` | Minimal OpenAI-compatible chat client (local ollama by default) for AI workflows. |
+| `proc.rs` | Deadline-bounded subprocess helpers (`output`/`status`/`with_stdin`) used for every runtime tool call (clipboard, typing, `ydotool`, window-class probes) so a wedged tool can't hang a thread. |
 | `inject.rs` | Text injection: `paste` mode (`wl-copy` + `ydotool` Ctrl+V, clipboard save/restore) or `type` mode (`wtype`). |
 | `state.rs` | `StatePublisher` writes `state.json` atomically (tmp + rename); `Status` keeps in-memory + on-disk snapshot in sync and flashes transient states. |
 | `config.rs` | TOML config; built-in defaults embedded via `include_str!`; `Config::validate` rejects bad config at startup. |
@@ -138,7 +139,8 @@ binaries (not whisper-server/model), publish a GitHub release, and push to the A
 - Tests are inline `#[cfg(test)] mod tests` in the same file. Favor pure, testable
   helpers (e.g. `pick_workflow`, `pick_wayland_socket`) factored out of side-effecting code.
 - External tools are invoked as subprocesses: `pw-record`, `wl-copy`/`wl-paste`,
-  `ydotool`, `wtype`, `whisper-server`. Best-effort steps log via `tracing::warn!` and
+  `ydotool`, `wtype`, `whisper-server`. Short-lived runtime calls go through `proc` with a
+  timeout, never a bare `.output()`/`.status()`. Best-effort steps log via `tracing::warn!` and
   continue; only the critical step is a hard error.
 - Commit messages follow Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`,
   `style:`, `ci:`, optional scope like `fix(ci):`).
