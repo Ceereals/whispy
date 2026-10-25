@@ -65,7 +65,7 @@ rename) at up to 20 Hz during recording.
 - **rms**: 0..1, drives the waveform when `state === "recording"`. Smoothed internally by a VU-style follower (`Tokens.waveAttackTau` / `waveReleaseTau`), rendered at `Tokens.waveTickMs`.
 - **error_kind**: present in the daemon's JSON (kept for schema stability); the pill ignores it and renders `error_message`.
 - **error_message**: shown verbatim in the error pill. Width auto-fits (180–360 px), then ellipses.
-- **timestamp**: epoch float (fractional seconds). If older than `Tokens.staleThresholdMs` (5 s), the pill forces back to idle.
+- **timestamp**: epoch float (fractional seconds). While `recording` (refreshed continuously by RMS ticks), a timestamp older than `Tokens.staleThresholdMs` (5 s) forces the pill back to idle. Other states are written once and never aged out: a CPU transcription can take longer than 5 s.
 
 If the file is missing, malformed, or empty: pill stays idle, parse errors logged silently.
 
@@ -110,7 +110,7 @@ Edit `Tokens.qml` for everything else.
 
 1. **state.json missing at startup** → idle, no console errors.
 2. **JSON parse error** → silent `console.warn`, last valid state retained.
-3. **Stale state** (timestamp > 5 s old) → forced idle every 1 s tick.
+3. **Stale recording** (no RMS tick for > 5 s, e.g. the daemon died mid-recording) → forced idle on the next 1 s tick.
 4. **Rapid transitions** (rec → trans → error < 500 ms) → no frame skipping; behaviors interrupt cleanly.
 5. **Recording > 30 s** → no special handling; bars keep drawing.
 6. **Constant `rms = 0`** → bars sit at the 18 % floor; ambient glow still pulses.
@@ -128,7 +128,7 @@ After installing, verify each scenario:
 5. **Success** — check draws in; pill auto-hides ~600 ms later.
 6. **Error (long message)** — width grows up to 360 px, then ellipses; shake on entry; auto-hides ~1200 ms later.
 7. **Cancel** — write `state:"idle"` while recording; pill fades + slides down with no success/error beat.
-8. **Stale** — stop writing the file. After 5 s, pill returns to idle on its own.
+8. **Stale** — write `recording`, then stop writing the file. After 5 s, the pill returns to idle on its own. (A lone `transcribing` stays up until the next write.)
 9. **Click-through** — pill renders above a fullscreen browser/Electron app; clicking through it lands in the underlying app. **Verify focus is not stolen** — type in your terminal while the pill is on screen; characters still go to the terminal.
 10. **Reload** — `quickshell -p` again mid-recording; no crash, pill reappears on next state update.
 

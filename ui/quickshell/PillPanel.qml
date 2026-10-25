@@ -50,9 +50,11 @@ Scope {
             const j = JSON.parse(raw)
             const st = (j.state || "idle").toString()
 
-            // Stale check: if older than threshold, treat as idle
+            // Stale check: only `recording` is refreshed continuously (RMS ticks);
+            // the other states are written once, and a CPU transcription can take
+            // longer than the threshold, so they must not be aged out.
             const now = Date.now() / 1000
-            if (typeof j.timestamp === "number" &&
+            if (st === "recording" && typeof j.timestamp === "number" &&
                 (now - j.timestamp) * 1000 > Tokens.staleThresholdMs) {
                 scope._setState("idle", 0, "")
                 return
@@ -90,13 +92,13 @@ Scope {
         onTriggered: scope._setState("idle", 0, "")
     }
 
-    // Staleness ticker — every 1s, if last update > 5s old, force idle.
+    // Staleness ticker — every 1s while recording, if the last RMS tick is > 5s
+    // old (the daemon went away mid-recording), force idle.
     Timer {
         interval: 1000
-        running: true
+        running: scope.dictationState === "recording"
         repeat: true
         onTriggered: {
-            if (scope.dictationState === "idle") return
             const now = Date.now() / 1000
             if (scope.stateTimestamp > 0 &&
                 (now - scope.stateTimestamp) * 1000 > Tokens.staleThresholdMs) {

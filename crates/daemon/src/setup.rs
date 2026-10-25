@@ -59,6 +59,8 @@ enum SetupStep {
     Systemd,
     /// Install the Quickshell pill module.
     Quickshell,
+    /// Install the Omarchy 4 bar widget (dictation state in Omarchy's own bar).
+    Omarchy,
     /// Check that the installed system is actually ready to dictate.
     Verify,
     /// Print the push-to-talk keybinds for your compositor config.
@@ -77,6 +79,7 @@ pub fn run(cfg: &Config, args: SetupArgs) -> ExitCode {
         Some(SetupStep::Ydotool) => setup_ydotool(),
         Some(SetupStep::Systemd) => install_config(cfg).and_then(|()| install_systemd()),
         Some(SetupStep::Quickshell) => install_quickshell(!args.no_pill),
+        Some(SetupStep::Omarchy) => install_omarchy_widget(),
         Some(SetupStep::Verify) => {
             verify(cfg);
             Ok(())
@@ -126,6 +129,9 @@ fn full(cfg: &Config, args: &SetupArgs) -> Result<(), String> {
         // Install the pill on request, or automatically when Quickshell is present —
         // no point shipping the module to a machine that can't render it.
         install_quickshell(!args.no_pill)?;
+    }
+    if server == DisplayServer::Wayland && HyprConfig::detect() == HyprConfig::OmarchyLua {
+        install_omarchy_widget()?;
     }
     verify(cfg);
     print_next_steps(server);
@@ -613,6 +619,81 @@ fn quickshell_source() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.join("qmldir").exists())
 }
 
+// --- omarchy bar widget ------------------------------------------------------
+
+/// Plugin id of the Omarchy bar widget (third-party ids can't use `omarchy.*`).
+const OMARCHY_WIDGET_ID: &str = "whispy.dictation";
+
+/// The widget's plugin files (`ui/omarchy/`), embedded so every install method
+/// (AUR, install.sh, cargo) can drop them in place without packaging changes.
+const OMARCHY_WIDGET_FILES: [(&str, &str); 2] = [
+    (
+        "manifest.json",
+        include_str!("../../../ui/omarchy/manifest.json"),
+    ),
+    ("whispy.qml", include_str!("../../../ui/omarchy/whispy.qml")),
+];
+
+/// Install whispy as an Omarchy 4 bar widget plugin and, the first time, put it on
+/// the bar.
+///
+/// The files are rewritten on every run so upgrades reach them (Omarchy reloads
+/// plugin code on save). Only a first install places the widget, through
+/// `omarchy-bar put`, Omarchy's call for unattended installers: it enables the
+/// plugin and never moves a widget that is already on the bar. Later runs leave
+/// the layout alone, so a widget the user disabled stays disabled.
+fn install_omarchy_widget() -> Result<(), String> {
+    println!("\n==> Omarchy bar widget");
+    let dir = omarchy_widget_dir();
+    let first_install = !dir.exists();
+    fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for (name, contents) in OMARCHY_WIDGET_FILES {
+        let path = dir.join(name);
+        fs::write(&path, contents).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    println!("  installed {}", dir.display());
+
+    let id = OMARCHY_WIDGET_ID;
+    if !first_install {
+        println!("  updated in place; its spot on the bar (if any) is unchanged");
+        return Ok(());
+    }
+    if !have("omarchy-shell") || !have("omarchy-bar") {
+        println!("  add it to the bar from your Omarchy session: omarchy bar put {id}");
+        return Ok(());
+    }
+    // Rescan first so the shell knows the new plugin before `put` asks for it.
+    // Best-effort: the shell may not be running (e.g. setup over SSH).
+    let _ = Command::new("omarchy-shell")
+        .args(["shell", "rescanPlugins"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    if exec(Command::new("omarchy-bar").args(["put", id])).is_ok() {
+        println!(
+            "  move it with `omarchy bar move {id} --section left|center|right`;\n  \
+             remove it with `omarchy plugin disable {id}`"
+        );
+    } else {
+        println!("  could not add it now — from your Omarchy session run: omarchy bar put {id}");
+    }
+    Ok(())
+}
+
+/// Where Omarchy discovers third-party plugins. Omarchy hardcodes
+/// `$HOME/.config/omarchy/plugins` (it ignores `$XDG_CONFIG_HOME`), so this does too.
+fn omarchy_widget_dir() -> PathBuf {
+    config::expand("~/.config/omarchy/plugins").join(OMARCHY_WIDGET_ID)
+}
+
+/// `$XDG_CONFIG_HOME`, defaulting to `~/.config`.
+fn config_home() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| config::expand("~/.config"))
+}
+
 // --- verify -----------------------------------------------------------------
 
 /// Check the *running* system, not just tools on PATH: are the model and binary in
@@ -819,10 +900,7 @@ impl HyprConfig {
         let omarchy = std::env::var_os("OMARCHY_PATH").is_some_and(|p| !p.is_empty())
             || Path::new("/usr/share/omarchy").is_dir()
             || config::expand("~/.local/share/omarchy").is_dir();
-        let lua = std::env::var_os("XDG_CONFIG_HOME")
-            .map_or_else(|| config::expand("~/.config"), PathBuf::from)
-            .join("hypr/hyprland.lua")
-            .is_file();
+        let lua = config_home().join("hypr/hyprland.lua").is_file();
         Self::pick(omarchy, lua)
     }
 
@@ -969,6 +1047,34 @@ mod tests {
             assert!(!names.contains(&"wl-copy"));
             assert!(!names.contains(&"wtype"));
         }
+    }
+
+    #[test]
+    fn omarchy_widget_manifest_is_consistent() {
+        // The embedded manifest must name our id and point at the embedded QML,
+        // or Omarchy's registry silently drops the plugin.
+        let manifest: serde_json::Value =
+            serde_json::from_str(OMARCHY_WIDGET_FILES[0].1).expect("manifest.json parses");
+        assert_eq!(manifest["schemaVersion"], 1);
+        assert_eq!(manifest["id"], OMARCHY_WIDGET_ID);
+        assert!(
+            !OMARCHY_WIDGET_ID.starts_with("omarchy."),
+            "reserved namespace"
+        );
+        assert_eq!(manifest["kinds"][0], "bar-widget");
+        let entry = manifest["entryPoints"]["barWidget"]
+            .as_str()
+            .expect("entry point");
+        let qml = OMARCHY_WIDGET_FILES
+            .iter()
+            .find(|(name, _)| *name == entry)
+            .expect("entry point file is embedded");
+        assert!(qml.1.contains("function triggerPress(button)"));
+        assert!(qml.1.contains("whispy-client toggle"));
+        assert_eq!(
+            omarchy_widget_dir().file_name().and_then(|n| n.to_str()),
+            Some(OMARCHY_WIDGET_ID)
+        );
     }
 
     #[test]

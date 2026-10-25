@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "whispy.dictation",
+  "name": "whispy",
+  "version": "1.0.0",
+  "author": "whispy",
+  "description": "whispy dictation state; click to dictate",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "whispy.qml"
+  },
+  "barWidget": {
+    "displayName": "Dictation (whispy)",
+    "description": "Live whispy state: idle, recording, transcribing. Left click toggles dictation, right or middle click cancels.",
+    "category": "Status",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "hideWhenIdle": false
+    },
+    "schema": [
+      {
+        "key": "hideWhenIdle",
+        "type": "boolean",
+        "label": "Hide when idle",
+        "description": "Only show the icon while recording, transcribing, or flashing the result.",
+        "defaultValue": false
+      }
+    ]
+  }
+}

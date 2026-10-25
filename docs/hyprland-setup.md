@@ -147,10 +147,29 @@ bindd  = SUPER CTRL SHIFT, X, Cancel dictation, exec, whispy-client cancel
 enough for whispy to take over the keys, but Voxtype still keeps its own model
 loaded. Remove it to free the memory: `omarchy-voxtype-remove`.
 
-**Status UI.** The dictation icon in Omarchy's top bar follows Voxtype only. whispy
-shows its own pill instead: `setup` runs it as the `whispy-pill` user service, a
-separate Quickshell instance that doesn't touch `omarchy-shell`. It sits at the
-bottom of the screen, clear of the bar.
+**Status UI.** Omarchy's own dictation icon follows Voxtype only, so whispy brings
+two of its own; use either or both:
+
+- **Bar widget.** On Omarchy 4, `setup` installs whispy as an Omarchy bar widget
+  plugin (`whispy.dictation`, in `~/.config/omarchy/plugins/`) and puts it on the
+  right of the bar. Re-run just this step with `whispy-daemon setup omarchy`.
+  It follows `state.json` live: a mic, pulsing red while recording, an hourglass
+  while transcribing, a check or mic-off when done. Left click toggles dictation;
+  right or middle click cancels. Manage it like any Omarchy widget:
+
+  ```sh
+  omarchy bar move whispy.dictation --section left   # or center / right
+  omarchy bar set whispy.dictation hideWhenIdle true --json   # show only while dictating
+  omarchy plugin disable whispy.dictation             # take it off the bar
+  omarchy bar put whispy.dictation                    # put it back
+  ```
+
+  Re-running `setup` updates the widget's files but never moves it, or re-adds it
+  after you disable it.
+- **Pill.** `setup` also runs the floating pill as the `whispy-pill` user service,
+  a separate Quickshell instance that doesn't touch `omarchy-shell`. It sits at the
+  bottom of the screen, clear of the bar. Keep only the bar icon with
+  `setup --no-pill`.
 
 **Injection.** Omarchy ships `wl-clipboard` and `wtype` but not `ydotool` (the AUR
 package pulls it in). If you'd rather skip the uinput/`input`-group step, set
