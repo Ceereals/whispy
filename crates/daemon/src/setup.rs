@@ -552,7 +552,7 @@ fn unit_contents(exe: &Path) -> String {
         "[Unit]\n\
          Description=whispy dictation daemon\n\
          Documentation=https://github.com/Ceereals/whispy\n\
-         After=pipewire.service ydotoold.service\n\
+         After=graphical-session.target pipewire.service ydotoold.service\n\
          Wants=ydotoold.service\n\
          PartOf=graphical-session.target\n\
          \n\
@@ -1076,7 +1076,7 @@ mod tests {
         let unit = unit_contents(Path::new("/usr/bin/whispy-daemon"));
         assert!(unit.contains("Wants=ydotoold.service"), "{unit}");
         assert!(
-            unit.contains("After=pipewire.service ydotoold.service"),
+            unit.contains("After=graphical-session.target pipewire.service ydotoold.service"),
             "{unit}"
         );
         assert!(unit.contains("ExecStart=/usr/bin/whispy-daemon"), "{unit}");

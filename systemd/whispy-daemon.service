@@ -1,7 +1,9 @@
 [Unit]
 Description=whispy dictation daemon
 Documentation=https://github.com/Ceereals/whispy
-After=pipewire.service ydotoold.service
+# Start only once the compositor is up, so WAYLAND_DISPLAY is in the environment
+# for wtype/wl-copy (before that, injection fails).
+After=graphical-session.target pipewire.service ydotoold.service
 Wants=ydotoold.service
 PartOf=graphical-session.target
 
