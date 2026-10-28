@@ -1,7 +1,10 @@
 //! `PipeWire` audio capture via `pw-record` (raw s16le mono), with RMS metering,
 //! digital gain, and clip-duration limits.
 //!
-//! `pw-record --format s16 -` streams headerless little-endian PCM to stdout. A
+//! `pw-record --raw --format s16 -` streams headerless little-endian PCM to stdout.
+//! `--raw` is required: without it, current `PipeWire` (1.6) wraps stdout in a Sun AU
+//! container whose samples are big-endian, and reading those as little-endian turns
+//! speech into noise (whisper then hallucinates). See [`record_args`]. A
 //! reader thread parses it into `i16` samples, applies `audio.gain`, reports RMS
 //! every `audio.rms_interval_ms`, and caps the buffer at `audio.max_clip_secs`
 //! (firing `on_too_long`). The first ~50 ms are dropped to skip the USB codec's
@@ -64,13 +67,7 @@ impl Recorder {
         S: FnOnce() + Send + 'static,
     {
         let mut child = Command::new("pw-record")
-            .arg("--rate")
-            .arg(self.cfg.rate.to_string())
-            .arg("--channels")
-            .arg(self.cfg.channels.to_string())
-            .arg("--format")
-            .arg("s16")
-            .arg("-")
+            .args(record_args(self.cfg.rate, self.cfg.channels))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -264,6 +261,22 @@ where
     samples
 }
 
+/// Arguments for `pw-record`: headerless (`--raw`) s16 PCM on stdout, which the
+/// reader parses as native little-endian. Without `--raw`, `PipeWire` 1.6 writes a
+/// big-endian Sun AU stream to stdout instead.
+fn record_args(rate: u32, channels: u16) -> Vec<String> {
+    vec![
+        "--raw".into(),
+        "--rate".into(),
+        rate.to_string(),
+        "--channels".into(),
+        channels.to_string(),
+        "--format".into(),
+        "s16".into(),
+        "-".into(),
+    ]
+}
+
 /// Apply a linear gain with saturation.
 #[expect(
     clippy::float_cmp,
@@ -307,6 +320,26 @@ fn normalize_peak(mut buf: Vec<i16>) -> Vec<i16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn record_args_request_raw_s16_on_stdout() {
+        // Regression: without --raw, pw-record emits big-endian AU on stdout and
+        // the little-endian reader turns speech into noise.
+        let args = record_args(16000, 1);
+        assert_eq!(
+            args,
+            [
+                "--raw",
+                "--rate",
+                "16000",
+                "--channels",
+                "1",
+                "--format",
+                "s16",
+                "-"
+            ]
+        );
+    }
 
     #[test]
     fn gain_saturates() {
