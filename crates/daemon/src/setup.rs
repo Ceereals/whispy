@@ -51,6 +51,8 @@ enum SetupStep {
     Doctor,
     /// Clone and build whisper.cpp with the configured `stt.backend`.
     Whisper,
+    /// Install whispy-stt, the Parakeet engine (`stt.engine = "parakeet"`).
+    Stt,
     /// Download the ggml model to the configured path.
     Model,
     /// Grant uinput access for ydotool (sudo; log out/in afterwards).
@@ -75,6 +77,7 @@ pub fn run(cfg: &Config, args: SetupArgs) -> ExitCode {
             Ok(())
         }
         Some(SetupStep::Whisper) => build_whisper(cfg),
+        Some(SetupStep::Stt) => install_stt(cfg),
         Some(SetupStep::Model) => download_model(cfg),
         Some(SetupStep::Ydotool) => setup_ydotool(),
         Some(SetupStep::Systemd) => install_config(cfg).and_then(|()| install_systemd()),
@@ -102,7 +105,11 @@ pub fn run(cfg: &Config, args: SetupArgs) -> ExitCode {
 /// The full bootstrap, in dependency order.
 fn full(cfg: &Config, args: &SetupArgs) -> Result<(), String> {
     doctor(cfg);
-    build_whisper(cfg)?;
+    if cfg.stt.is_parakeet() {
+        install_stt(cfg)?;
+    } else {
+        build_whisper(cfg)?;
+    }
     download_model(cfg)?;
     if args.no_ydotool {
         println!("\n==> ydotool: skipped (--no-ydotool)");
@@ -255,7 +262,7 @@ pub fn required_tools(server: DisplayServer, mode: &str) -> Vec<(&'static str, &
 fn build_whisper(cfg: &Config) -> Result<(), String> {
     let backend = resolve_backend(&cfg.stt.backend);
     println!("\n==> whisper.cpp ({backend})");
-    let bin = cfg.stt.server_bin_path();
+    let bin = cfg.stt.whisper_server_bin();
     if bin.exists() {
         println!("  already built: {}", bin.display());
         return Ok(());
@@ -360,11 +367,139 @@ fn build_whisper(cfg: &Config) -> Result<(), String> {
     Ok(())
 }
 
+// --- whispy-stt (Parakeet engine) -------------------------------------------
+
+/// Where `setup stt` builds whispy-stt from (at this release's tag).
+const REPO_URL: &str = "https://github.com/Ceereals/whispy";
+
+/// transcribe.cpp `CMake` flags for the build: skip system BLAS, whose
+/// `find_package` can pick a reference libblas without `cblas_*` and fail the
+/// link (same as the repo's `.cargo/config.toml`, which `cargo install --git`
+/// doesn't read).
+const STT_CMAKE_ARGS: &str = "-DTRANSCRIBE_USE_SYSTEM_BLAS=OFF";
+
+/// Install whispy-stt, the Parakeet engine. Packages ship it next to
+/// whispy-daemon; source installs build it with cargo, with the Vulkan backend
+/// when `stt.backend` resolves to it (else CPU).
+fn install_stt(cfg: &Config) -> Result<(), String> {
+    let backend = resolve_backend(&cfg.stt.backend);
+    println!("\n==> whispy-stt, Parakeet engine ({backend})");
+    let bin = cfg.stt.parakeet_bin_path();
+    if bin.is_file() {
+        println!("  already installed: {}", bin.display());
+        return Ok(());
+    }
+    let missing: Vec<&str> = [
+        ("cargo", "cargo (Rust)"),
+        ("cmake", "cmake"),
+        ("c++", "a C++ compiler"),
+    ]
+    .into_iter()
+    .filter(|(cmd, _)| !have(cmd))
+    .map(|(_, what)| what)
+    .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "building whispy-stt needs {}.\n  \
+             Install them (Rust: https://rustup.rs), then re-run, \
+             or set `stt.engine = \"whisper\"` in config.toml.",
+            missing.join(", ")
+        ));
+    }
+    let vulkan = backend == "vulkan";
+    if vulkan {
+        let missing = missing_vulkan_build_deps(have, header_installed);
+        if !missing.is_empty() {
+            let packages: Vec<&str> = missing.iter().map(|d| d.package).collect();
+            return Err(format!(
+                "the Vulkan build of whispy-stt needs: {}.\n  \
+                 Install them (Arch: `sudo pacman -S --needed {}`), then re-run.\n  \
+                 Or set `stt.backend = \"cpu\"` in config.toml for a CPU-only build.",
+                missing
+                    .iter()
+                    .map(|d| d.what)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                packages.join(" ")
+            ));
+        }
+    }
+    println!("  building with cargo (the first build compiles transcribe.cpp; a few minutes)");
+    exec(
+        Command::new("cargo")
+            .args(stt_install_args(env!("CARGO_PKG_VERSION"), vulkan))
+            .env("TRANSCRIBE_CMAKE_ARGS", STT_CMAKE_ARGS),
+    )?;
+    let installed = cfg.stt.parakeet_bin_path();
+    if !installed.is_file() {
+        return Err(format!(
+            "cargo finished but whispy-stt isn't at {}; set `stt.parakeet_bin` to where it went",
+            installed.display()
+        ));
+    }
+    println!("  installed: {}", installed.display());
+    Ok(())
+}
+
+/// `cargo install` arguments for whispy-stt at this release's tag.
+fn stt_install_args(version: &str, vulkan: bool) -> Vec<String> {
+    let mut args: Vec<String> = ["install", "--locked", "--git", REPO_URL, "--tag"]
+        .map(String::from)
+        .to_vec();
+    args.push(format!("v{version}"));
+    args.push(config::STT_BIN.to_string());
+    if vulkan {
+        args.extend(["--features".to_string(), "vulkan".to_string()]);
+    }
+    args
+}
+
+/// Check a downloaded file against its expected SHA-256 (`sha256sum`, coreutils).
+fn verify_sha256(path: &Path, expected: &str) -> Result<(), String> {
+    let out = crate::proc::output(
+        Command::new("sha256sum").arg(path),
+        Duration::from_secs(300),
+    )
+    .map_err(|e| format!("sha256sum: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let got = stdout.split_whitespace().next().unwrap_or_default();
+    if out.status.success() && got.eq_ignore_ascii_case(expected) {
+        Ok(())
+    } else {
+        Err(format!(
+            "checksum mismatch for {}: expected {expected}, got {got:?} (download removed; re-run to retry)",
+            path.display()
+        ))
+    }
+}
+
 // --- model download ---------------------------------------------------------
 
+/// Parakeet model `setup model` fetches: Handy's GGUF conversion, pinned to a
+/// revision and checked against its SHA-256 (both from Handy's model catalog).
+const PARAKEET_MODEL_URL: &str = "https://huggingface.co/handy-computer/parakeet-ultra-gguf/resolve/39eeb55181f0d354fd934f06e92fd8d5037fed8e/parakeet-ultra-Q8_0.gguf";
+const PARAKEET_MODEL_SHA256: &str =
+    "007a59761e9258779f189df396b50d12b83bb5b79e66df4b955c230d2f2a0a59";
+
 fn download_model(cfg: &Config) -> Result<(), String> {
-    println!("\n==> model: {}", cfg.stt.model);
     let dest = cfg.stt.model_file();
+    let (label, url, sha256) = if cfg.stt.is_parakeet() {
+        (
+            "parakeet-ultra (Q8_0)".to_string(),
+            PARAKEET_MODEL_URL.to_string(),
+            Some(PARAKEET_MODEL_SHA256),
+        )
+    } else {
+        (
+            cfg.stt.model.clone(),
+            format!(
+                "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{}.bin",
+                cfg.stt.model
+            ),
+            None,
+        )
+    };
+    println!("\n==> model: {label}");
     if dest.exists() {
         println!("  already present: {}", dest.display());
         return Ok(());
@@ -372,10 +507,6 @@ fn download_model(cfg: &Config) -> Result<(), String> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
-    let url = format!(
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{}.bin",
-        cfg.stt.model
-    );
     println!("  downloading {url}");
 
     let resp = ureq::get(&url)
@@ -407,6 +538,12 @@ fn download_model(cfg: &Config) -> Result<(), String> {
     }
     out.flush().map_err(|e| format!("flush: {e}"))?;
     println!();
+    if let Some(expected) = sha256 {
+        verify_sha256(&tmp, expected).inspect_err(|_| {
+            fs::remove_file(&tmp).ok();
+        })?;
+        println!("  checksum ok");
+    }
     fs::rename(&tmp, &dest).map_err(|e| format!("rename: {e}"))?;
     println!("  saved: {}", dest.display());
     Ok(())
@@ -861,7 +998,7 @@ fn verify(cfg: &Config) {
         cfg.stt.model_file().exists(),
     );
     report(
-        "whisper-server",
+        cfg.stt.server_name(),
         &cfg.stt.server_bin_path().display().to_string(),
         cfg.stt.server_bin_path().exists(),
     );
@@ -885,7 +1022,7 @@ fn verify(cfg: &Config) {
     }
 
     report(
-        "whisper http",
+        "stt http",
         &format!("listening on {}:{}", cfg.stt.host, cfg.stt.port),
         port_open(&cfg.stt.host, cfg.stt.port),
     );
@@ -1350,6 +1487,40 @@ mod tests {
             assert!(stop.starts_with("bindr"), "{binds}");
             assert!(!binds.contains("hl."), "{binds}");
         }
+    }
+
+    #[test]
+    fn stt_installs_from_the_release_tag() {
+        let args = stt_install_args("0.5.0", false);
+        assert_eq!(
+            args,
+            [
+                "install",
+                "--locked",
+                "--git",
+                REPO_URL,
+                "--tag",
+                "v0.5.0",
+                "whispy-stt"
+            ]
+        );
+        let gpu = stt_install_args("0.5.0", true);
+        assert_eq!(gpu[gpu.len() - 2..], ["--features", "vulkan"]);
+    }
+
+    #[test]
+    fn sha256_check_accepts_only_the_right_digest() {
+        let dir = std::env::temp_dir().join(format!("whispy-sha-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("f");
+        fs::write(&file, b"abc").unwrap();
+        // sha256("abc")
+        let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        verify_sha256(&file, abc).unwrap();
+        verify_sha256(&file, &abc.to_uppercase()).unwrap();
+        let err = verify_sha256(&file, &"0".repeat(64)).unwrap_err();
+        assert!(err.contains("checksum mismatch"), "{err}");
+        fs::remove_dir_all(&dir).ok();
     }
 
     fn all_indicators() -> Vec<String> {

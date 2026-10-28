@@ -19,6 +19,7 @@ mod setup;
 mod state;
 mod stats;
 mod stt;
+mod vocab;
 mod whisper;
 
 use std::path::PathBuf;
@@ -115,7 +116,7 @@ fn main() -> ExitCode {
 }
 
 fn run(cfg: Config) -> std::io::Result<()> {
-    info!(model = %cfg.stt.model, "starting whispy-daemon");
+    info!(engine = %cfg.stt.engine, model = %cfg.stt.model_file().display(), "starting whispy-daemon");
 
     // Bail before touching whisper-server if a daemon is already live: a second
     // instance would otherwise reuse its server, steal its socket, and delete it on exit.
@@ -176,16 +177,18 @@ fn run(cfg: Config) -> std::io::Result<()> {
         return Err(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
             format!(
-                "whisper-server did not become ready (see {} for details)",
+                "{} did not become ready (see {} for details)",
+                cfg.stt.server_name(),
                 whisper_log.display()
             ),
         ));
     }
-    info!("whisper-server ready");
+    info!("{} ready", cfg.stt.server_name());
 
     // Monitor: if whisper-server dies after startup, respawn it. Polls often enough
     // that SIGTERM-driven shutdown stays responsive.
     let monitor = {
+        let server_name = cfg.stt.server_name();
         let whisper = Arc::clone(&whisper);
         let shutdown = Arc::clone(&shutdown);
         std::thread::spawn(move || {
@@ -197,9 +200,9 @@ fn run(cfg: Config) -> std::io::Result<()> {
                 let mut w = whisper.lock().expect("whisper lock");
                 if !w.is_alive() {
                     match w.restart(WHISPER_READY_TIMEOUT, &shutdown) {
-                        Ok(true) => info!("whisper-server restarted"),
-                        Ok(false) => warn!("whisper-server restart did not become ready"),
-                        Err(e) => error!(error = %e, "failed to restart whisper-server"),
+                        Ok(true) => info!("{server_name} restarted"),
+                        Ok(false) => warn!("{server_name} restart did not become ready"),
+                        Err(e) => error!(error = %e, "failed to restart {server_name}"),
                     }
                 }
             }
@@ -207,7 +210,8 @@ fn run(cfg: Config) -> std::io::Result<()> {
     };
 
     // Custom vocabulary biases whisper-server's decoding via the prompt field.
-    let vocab_prompt = if cfg.dictionary.vocabulary.is_empty() {
+    // whispy-stt (Parakeet) ignores prompts; `vocab` corrects its output instead.
+    let vocab_prompt = if cfg.dictionary.vocabulary.is_empty() || cfg.stt.is_parakeet() {
         None
     } else {
         Some(cfg.dictionary.vocabulary.join(", "))

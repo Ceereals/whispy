@@ -1,4 +1,5 @@
-//! Post-transcription text pipeline: corrections -> snippets -> AI workflow.
+//! Post-transcription text pipeline: vocabulary (Parakeet) -> corrections ->
+//! snippets -> AI workflow.
 
 use std::collections::BTreeMap;
 use std::process::Command;
@@ -29,6 +30,17 @@ pub fn process(
     ctx: &AppContext,
     backend: &dyn InjectBackend,
 ) -> String {
+    // whisper takes the vocabulary as a decoding prompt; Parakeet can't, so match
+    // it against the transcript instead.
+    let text = if cfg.stt.is_parakeet() {
+        crate::vocab::apply(
+            &text,
+            &cfg.dictionary.vocabulary,
+            crate::vocab::DEFAULT_THRESHOLD,
+        )
+    } else {
+        text
+    };
     let text = apply_corrections(&text, &cfg.dictionary.corrections);
     let text = apply_snippets(&text, &cfg.snippets.entries, backend);
 

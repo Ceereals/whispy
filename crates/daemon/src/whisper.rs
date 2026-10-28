@@ -1,6 +1,9 @@
-//! Supervises the whisper-server child process (whisper.cpp Vulkan build).
+//! Supervises the STT server child process: whisper.cpp's whisper-server, or
+//! `whispy-stt` (transcribe.cpp/Parakeet) when `stt.engine = "parakeet"`. Both take
+//! the same command line and serve the same `/inference` API, so the rest of the
+//! daemon doesn't care which one runs.
 //!
-//! Spawns `cfg.stt.server_bin` with the configured model, waits for the HTTP port
+//! Spawns the engine's server binary with the configured model, waits for the HTTP port
 //! to accept connections, and kills the child on daemon shutdown. A monitor thread
 //! in `main` polls [`WhisperServer::is_alive`] and calls [`WhisperServer::restart`]
 //! if the child dies after startup — without it the daemon would keep running but
@@ -43,10 +46,11 @@ impl WhisperServer {
     fn start_child(cfg: &Stt, log_path: &Path) -> std::io::Result<Child> {
         let bin = cfg.server_bin_path();
         let model = cfg.model_file();
+        let name = cfg.server_name();
         if !bin.exists() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("whisper-server binary not found at {}", bin.display()),
+                format!("{name} binary not found at {}", bin.display()),
             ));
         }
         if !model.exists() {
@@ -62,19 +66,24 @@ impl WhisperServer {
             .create(true)
             .append(true)
             .open(log_path)?;
-        writeln!(log, "--- whispy: starting whisper-server ---")?;
+        writeln!(log, "--- whispy: starting {name} ---")?;
         let errlog = log.try_clone()?;
-        info!(bin = %bin.display(), model = %model.display(), port = cfg.port, "spawning whisper-server");
-        Command::new(&bin)
-            .arg("-m")
+        info!(bin = %bin.display(), model = %model.display(), port = cfg.port, "spawning {name}");
+        let mut cmd = Command::new(&bin);
+        cmd.arg("-m")
             .arg(&model)
             .arg("-l")
             .arg(&cfg.language)
             .arg("--host")
             .arg(&cfg.host)
             .arg("--port")
-            .arg(cfg.port.to_string())
-            .stdin(Stdio::null())
+            .arg(cfg.port.to_string());
+        // whispy-stt picks its compute backend at runtime; whisper-server's is
+        // fixed when `setup whisper` builds it.
+        if cfg.is_parakeet() {
+            cmd.arg("--backend").arg(&cfg.backend);
+        }
+        cmd.stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(errlog))
             .spawn()
@@ -90,7 +99,7 @@ impl WhisperServer {
         {
             Ok(addrs) => addrs.collect(),
             Err(e) => {
-                warn!(host = %self.cfg.host, error = %e, "cannot resolve whisper-server host");
+                warn!(host = %self.cfg.host, error = %e, "cannot resolve the STT server host");
                 return false;
             }
         };
@@ -122,7 +131,7 @@ impl WhisperServer {
         timeout: Duration,
         shutdown: &Arc<AtomicBool>,
     ) -> std::io::Result<bool> {
-        warn!("whisper-server is not running; restarting");
+        warn!("{} is not running; restarting", self.cfg.server_name());
         self.child.wait().ok();
         self.child = Self::start_child(&self.cfg, &self.log_path)?;
         Ok(self.wait_ready(timeout, shutdown))
