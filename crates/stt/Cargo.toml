@@ -1,0 +1,28 @@
+[package]
+name = "whispy-stt"
+description = "whispy's speech-to-text server on transcribe.cpp (Parakeet and other GGUF models), whisper-server compatible."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "whispy-stt"
+path = "src/main.rs"
+
+[features]
+# CPU-only by default, so it builds anywhere with cmake + a C++ compiler.
+# `vulkan` adds the GPU backend (needs vulkan-headers + glslc to build and the
+# Vulkan loader at runtime); `whispy-daemon setup` picks it per machine.
+default = []
+vulkan = ["transcribe-cpp/vulkan"]
+
+[dependencies]
+transcribe-cpp = { workspace = true }
+tiny_http = { workspace = true }
+hound = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/common", "crates/daemon", "crates/client"]
+members = ["crates/common", "crates/daemon", "crates/client", "crates/stt"]
 
 [workspace.package]
 version = "0.4.0"
@@ -26,6 +26,11 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 # Settings TUI (`whispy-daemon settings`): terminal UI + comment-preserving config edits.
 ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache"] }
 toml_edit = "0.25"
+# whispy-stt: transcribe.cpp engine (C++/ggml, built with cmake) behind a tiny
+# sync HTTP server. No default features: metal is the crate default, CPU is ours.
+transcribe-cpp = { version = "0.4", default-features = false }
+tiny_http = "0.12"
+hound = "3"
 
 # Lints shared by every crate (each opts in with `[lints] workspace = true`).
 # `cargo clippy` picks these up automatically; CI runs it with `-D warnings`, so

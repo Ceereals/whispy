@@ -1,0 +1,9 @@
+# Build settings for every cargo invocation in this repo (also the AUR build,
+# which builds from the release tarball).
+[env]
+# whispy-stt / transcribe.cpp: don't link a system BLAS for the host decoder.
+# CMake's find_package(BLAS) can pick a reference libblas without the cblas_*
+# symbols (Arch's `blas`/`cblas` split), which fails the final link; the
+# decoder is a small part of the run and is fast enough without it. An
+# explicit TRANSCRIBE_CMAKE_ARGS in the environment still wins.
+TRANSCRIBE_CMAKE_ARGS = "-DTRANSCRIBE_USE_SYSTEM_BLAS=OFF"
