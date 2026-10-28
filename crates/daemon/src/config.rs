@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::engine::{Engine, STT_BIN};
+
 /// Built-in defaults, embedded so the daemon runs without an installed config file.
 const DEFAULT_TOML: &str = include_str!("../../../config/default.toml");
 
@@ -56,11 +58,10 @@ pub struct Stt {
     /// (e.g. a GPU/Vulkan lockup) would strand the daemon in `transcribing` forever.
     #[serde(default = "default_stt_timeout_secs")]
     pub timeout_secs: u64,
-    /// Speech-to-text engine the daemon runs as its STT server: `"parakeet"`
-    /// (`whispy-stt` on transcribe.cpp) or `"whisper"` (whisper.cpp's
-    /// whisper-server). Configs written before this option keep `"whisper"`.
-    #[serde(default = "default_engine")]
-    pub engine: String,
+    /// Speech-to-text engine the daemon runs as its STT server (see [`Engine`]).
+    /// Configs written before this option keep whisper.
+    #[serde(default)]
+    pub engine: Engine,
     /// Parakeet GGUF model (`engine = "parakeet"`).
     #[serde(default = "default_parakeet_model_path")]
     pub parakeet_model_path: String,
@@ -68,10 +69,6 @@ pub struct Stt {
     /// to `whispy-daemon`, else the first on `PATH`.
     #[serde(default)]
     pub parakeet_bin: String,
-}
-
-fn default_engine() -> String {
-    "whisper".to_string()
 }
 
 fn default_parakeet_model_path() -> String {
@@ -312,25 +309,15 @@ impl Config {
     /// the misconfigurations that would otherwise fail opaquely at first dictation
     /// (missing model, bad injection mode, out-of-range thresholds).
     pub fn validate(&self) -> Result<(), String> {
-        match self.stt.engine.as_str() {
-            "parakeet" | "whisper" => {}
-            other => {
-                return Err(format!(
-                    "stt.engine must be \"parakeet\" or \"whisper\", got {other:?}"
-                ));
-            }
-        }
+        // An unknown `stt.engine` already failed deserialization.
+        let engine = self.stt.engine;
         let bin = self.stt.server_bin_path();
         if !bin.exists() {
-            let step = if self.stt.is_parakeet() {
-                "stt"
-            } else {
-                "whisper"
-            };
             return Err(format!(
-                "{} not found at {} — run `whispy-daemon setup {step}`",
-                self.stt.server_name(),
-                bin.display()
+                "{} not found at {} — run `whispy-daemon setup {}`",
+                engine.server_name(),
+                bin.display(),
+                engine.setup_step()
             ));
         }
         let model = self.stt.model_file();
@@ -412,36 +399,14 @@ impl Config {
 }
 
 impl Stt {
-    /// Whether the configured engine is Parakeet (`whispy-stt`).
-    pub fn is_parakeet(&self) -> bool {
-        self.engine == "parakeet"
-    }
-
-    /// The STT server program's name, for logs and messages.
-    pub fn server_name(&self) -> &'static str {
-        if self.is_parakeet() {
-            "whispy-stt"
-        } else {
-            "whisper-server"
-        }
-    }
-
     /// The STT server binary the daemon runs for the configured engine.
     pub fn server_bin_path(&self) -> PathBuf {
-        if self.is_parakeet() {
-            self.parakeet_bin_path()
-        } else {
-            self.whisper_server_bin()
-        }
+        self.engine.server_bin(self)
     }
 
     /// The model file for the configured engine.
     pub fn model_file(&self) -> PathBuf {
-        if self.is_parakeet() {
-            expand(&self.parakeet_model_path)
-        } else {
-            expand(&self.model_path)
-        }
+        self.engine.model_file(self)
     }
 
     /// whisper.cpp's whisper-server (built by `setup whisper`), whatever the engine.
@@ -469,9 +434,6 @@ impl Stt {
             .unwrap_or_else(|| expand("~/.cargo/bin").join(STT_BIN))
     }
 }
-
-/// The Parakeet STT server binary's file name.
-pub const STT_BIN: &str = "whispy-stt";
 
 /// The first candidate path that exists.
 fn first_existing(candidates: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
@@ -604,8 +566,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let cfg: Config = toml::from_str(&old).expect("old config parses");
-        assert_eq!(cfg.stt.engine, "whisper");
-        assert_eq!(cfg.stt.server_name(), "whisper-server");
+        assert_eq!(cfg.stt.engine, Engine::Whisper);
         assert_eq!(cfg.stt.model_file(), expand(&cfg.stt.model_path));
         assert_eq!(cfg.stt.server_bin_path(), cfg.stt.whisper_server_bin());
     }
@@ -613,10 +574,8 @@ mod tests {
     #[test]
     fn parakeet_engine_uses_its_own_model_and_server() {
         let mut cfg: Config = toml::from_str(DEFAULT_TOML).expect("defaults parse");
-        cfg.stt.engine = "parakeet".into();
+        cfg.stt.engine = Engine::Parakeet;
         cfg.stt.parakeet_bin = "/opt/whispy/whispy-stt".into();
-        assert!(cfg.stt.is_parakeet());
-        assert_eq!(cfg.stt.server_name(), "whispy-stt");
         assert_eq!(
             cfg.stt.server_bin_path(),
             PathBuf::from("/opt/whispy/whispy-stt")
@@ -630,10 +589,9 @@ mod tests {
 
     #[test]
     fn unknown_engine_is_rejected() {
-        let mut cfg: Config = toml::from_str(DEFAULT_TOML).expect("defaults parse");
-        cfg.stt.engine = "vosk".into();
-        let err = cfg.validate().unwrap_err();
-        assert!(err.contains("stt.engine"), "{err}");
+        let text = DEFAULT_TOML.replace("engine = \"parakeet\"", "engine = \"vosk\"");
+        let err = toml::from_str::<Config>(&text).unwrap_err().to_string();
+        assert!(err.contains("vosk"), "{err}");
     }
 
     #[test]
@@ -711,7 +669,7 @@ mod tests {
         // developer's own ~/.config/whispy/config.toml.
         let mut cfg: Config = toml::from_str(DEFAULT_TOML).unwrap();
         // These checks exercise the whisper paths; parakeet's are covered below.
-        cfg.stt.engine = "whisper".into();
+        cfg.stt.engine = Engine::Whisper;
         cfg.stt.server_bin = guard.bin.to_string_lossy().into_owned();
         cfg.stt.model_path = guard.model.to_string_lossy().into_owned();
         (cfg, guard)
@@ -720,7 +678,7 @@ mod tests {
     #[test]
     fn validate_checks_the_parakeet_engine_files() {
         let (mut cfg, g) = valid_config();
-        cfg.stt.engine = "parakeet".into();
+        cfg.stt.engine = Engine::Parakeet;
         cfg.stt.parakeet_bin = g.bin.to_string_lossy().into_owned();
         cfg.stt.parakeet_model_path = g.model.to_string_lossy().into_owned();
         assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());

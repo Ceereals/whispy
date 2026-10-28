@@ -36,8 +36,8 @@ Hyprland keybind ──► whispy-client ──(unix socket)──► whispy-dae
   exits fast (no async runtime, no config parsing).
 - **STT server** — the child the daemon supervises, per `stt.engine`. Both take the
   same CLI (`-m MODEL -l LANG --host H --port P`) and serve the same
-  `POST /inference` (multipart WAV → `verbose_json` subset), so `whisper.rs` and
-  `stt.rs` don't care which runs:
+  `POST /inference` (multipart WAV → `verbose_json` subset), so `stt_server.rs` and
+  `stt.rs` don't care which runs (what does differ lives in `engine.rs`):
   - **whispy-stt** (`crates/stt/`, `"parakeet"`) — our own server on the
     `transcribe-cpp` crate (CPU by default, `--features vulkan` for the GPU). A
     separate process on purpose: it keeps C++/Vulkan out of the daemon binary (it
@@ -80,7 +80,8 @@ Cargo workspace (`resolver = "3"`, `edition = "2024"`, MSRV `rust-version = 1.88
 | `app.rs` | `App` — maps socket commands to the capture→transcribe→filter→inject flow; owns the active `Session` (capture + its `AppContext`, handed to the transcribe thread) and an inject lock so overlapping clips paste one at a time. |
 | `server.rs` | Unix-socket server: line-based JSON (`Cmd` in, `Resp` out), polls a shutdown flag for clean SIGTERM exit. |
 | `audio.rs` | PipeWire capture via `pw-record` (raw s16le mono), RMS metering, gain, clip limits, trailing-silence auto-stop, peak normalization. |
-| `whisper.rs` | Spawns and supervises the STT server child (`whispy-stt` or `whisper-server`, per `stt.engine`); waits for its port; a monitor thread in `main` polls `is_alive` and `restart`s it if it dies; kills it on shutdown. |
+| `engine.rs` | `Engine` (`stt.engine`: `Whisper` \| `Parakeet`, serde-parsed): owns what differs per engine — server name/binary/extra args, model file + download source (URL, SHA-256), `setup` step, and the vocabulary strategy (`Prompt` for whisper, `Correct` via `vocab.rs` for Parakeet). Callers ask the engine instead of branching on it. |
+| `stt_server.rs` | Spawns and supervises the STT server child (`whispy-stt` or `whisper-server`, per `Engine`); waits for its port; a monitor thread in `main` polls `is_alive` and `restart`s it if it dies; kills it on shutdown. |
 | `vocab.rs` | Fuzzy custom-vocabulary correction (Levenshtein + Soundex over 1–3 word windows, ported from Handy) for Parakeet, which can't take whisper's prompt bias. |
 | `stt.rs` | HTTP client to the STT server's `/inference` (multipart WAV, `verbose_json`); parses transcript + confidence signals. |
 | `filter.rs` | Hallucination filter: confidence thresholds → punctuation-only rejection → exact + fuzzy (`strsim`) blacklist match. |

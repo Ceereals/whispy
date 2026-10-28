@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use crate::config::{self, Config};
 use crate::display::{self, Backend, DisplayServer};
+use crate::engine::{Engine, ModelSource};
 
 #[derive(clap::Args, Debug)]
 #[expect(
@@ -105,10 +106,9 @@ pub fn run(cfg: &Config, args: SetupArgs) -> ExitCode {
 /// The full bootstrap, in dependency order.
 fn full(cfg: &Config, args: &SetupArgs) -> Result<(), String> {
     doctor(cfg);
-    if cfg.stt.is_parakeet() {
-        install_stt(cfg)?;
-    } else {
-        build_whisper(cfg)?;
+    match cfg.stt.engine {
+        Engine::Parakeet => install_stt(cfg)?,
+        Engine::Whisper => build_whisper(cfg)?,
     }
     download_model(cfg)?;
     if args.no_ydotool {
@@ -447,7 +447,7 @@ fn stt_install_args(version: &str, vulkan: bool) -> Vec<String> {
         .map(String::from)
         .to_vec();
     args.push(format!("v{version}"));
-    args.push(config::STT_BIN.to_string());
+    args.push(crate::engine::STT_BIN.to_string());
     if vulkan {
         args.extend(["--features".to_string(), "vulkan".to_string()]);
     }
@@ -475,30 +475,9 @@ fn verify_sha256(path: &Path, expected: &str) -> Result<(), String> {
 
 // --- model download ---------------------------------------------------------
 
-/// Parakeet model `setup model` fetches: Handy's GGUF conversion, pinned to a
-/// revision and checked against its SHA-256 (both from Handy's model catalog).
-const PARAKEET_MODEL_URL: &str = "https://huggingface.co/handy-computer/parakeet-ultra-gguf/resolve/39eeb55181f0d354fd934f06e92fd8d5037fed8e/parakeet-ultra-Q8_0.gguf";
-const PARAKEET_MODEL_SHA256: &str =
-    "007a59761e9258779f189df396b50d12b83bb5b79e66df4b955c230d2f2a0a59";
-
 fn download_model(cfg: &Config) -> Result<(), String> {
     let dest = cfg.stt.model_file();
-    let (label, url, sha256) = if cfg.stt.is_parakeet() {
-        (
-            "parakeet-ultra (Q8_0)".to_string(),
-            PARAKEET_MODEL_URL.to_string(),
-            Some(PARAKEET_MODEL_SHA256),
-        )
-    } else {
-        (
-            cfg.stt.model.clone(),
-            format!(
-                "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{}.bin",
-                cfg.stt.model
-            ),
-            None,
-        )
-    };
+    let ModelSource { label, url, sha256 } = cfg.stt.engine.model_source(&cfg.stt);
     println!("\n==> model: {label}");
     if dest.exists() {
         println!("  already present: {}", dest.display());
@@ -998,7 +977,7 @@ fn verify(cfg: &Config) {
         cfg.stt.model_file().exists(),
     );
     report(
-        cfg.stt.server_name(),
+        cfg.stt.engine.server_name(),
         &cfg.stt.server_bin_path().display().to_string(),
         cfg.stt.server_bin_path().exists(),
     );

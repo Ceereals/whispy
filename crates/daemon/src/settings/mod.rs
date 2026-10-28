@@ -23,6 +23,7 @@ use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::config::{self, Config};
+use crate::engine::Engine;
 use crate::proc;
 use crate::stt::SttClient;
 use form::{Body, Choice, Effect, Form, HistoryEntry, Input, Section, SectionKey};
@@ -176,7 +177,7 @@ impl App {
             language: get(SectionKey::Language),
             mode: get(SectionKey::Typing),
             silence_timeout_ms: get(SectionKey::AutoStop).parse().unwrap_or(0),
-            engine: get(SectionKey::Engine),
+            engine: Engine::parse(&get(SectionKey::Engine)).unwrap_or_default(),
         }
     }
 
@@ -189,7 +190,7 @@ impl App {
         cfg.stt.language.clone_from(&values.language);
         cfg.injection.mode.clone_from(&values.mode);
         cfg.audio.silence_timeout_ms = values.silence_timeout_ms;
-        cfg.stt.engine.clone_from(&values.engine);
+        cfg.stt.engine = values.engine;
         cfg.validate()
     }
 
@@ -294,16 +295,16 @@ fn build_sections(values: &Values) -> Vec<Section> {
             &[
                 (
                     "Parakeet",
-                    "parakeet",
+                    Engine::Parakeet.as_str(),
                     "fastest, punctuates well, no text on silence · 25 European languages",
                 ),
                 (
                     "Whisper",
-                    "whisper",
+                    Engine::Whisper.as_str(),
                     "~100 languages · vocabulary as a decoding prompt",
                 ),
             ],
-            &values.engine,
+            values.engine.as_str(),
         ),
         radio(
             SectionKey::Language,
