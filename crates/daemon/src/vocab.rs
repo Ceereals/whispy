@@ -9,7 +9,12 @@
 //! "Hyperland" → "Hyprland" and "Charge B" → "`ChargeBee`".
 //!
 //! Ported from Handy's `apply_custom_words` (`src/audio_toolkit/text.rs`,
-//! MIT, © 2025 CJ Pais), with an inline Soundex instead of the `natural` crate.
+//! MIT, © 2025 CJ Pais), with an inline Soundex instead of the `natural` crate,
+//! and two guards Handy lacks (see [`acceptable`]): Soundex is an English
+//! algorithm and too coarse for Italian, so on its own it turned "pass"/"pesa"
+//! into "push", "comete" into "commit", "parchetto" into "Parakeet"; plain
+//! edit distance turned "whisky" into "whispy". Both are pinned by real
+//! transcripts in `tests/data/vocab-cases.json`.
 
 /// Default acceptance threshold (lower = stricter), as in Handy.
 pub const DEFAULT_THRESHOLD: f64 = 0.18;
@@ -124,14 +129,38 @@ fn best_match<'a>(
         if a.abs_diff(b) as f64 > (max_len * 0.25).max(2.0) {
             continue;
         }
-        let distance = strsim::levenshtein(candidate, &k.key) as f64 / max_len;
+        let edits = strsim::levenshtein(candidate, &k.key);
+        let distance = edits as f64 / max_len;
         let phonetic = soundex(candidate).is_some_and(|c| Some(c) == soundex(&k.key));
+        if !acceptable(edits, b, distance, phonetic) {
+            continue;
+        }
         let score = if phonetic { distance * 0.3 } else { distance };
         if score < threshold && best.is_none_or(|(_, s)| score < s) {
             best = Some((words[k.word].as_str(), score));
         }
     }
     best
+}
+
+/// Most of a custom word's letters a sound-alike match may change (edits ÷ the
+/// custom word's length). Real ASR misspellings stay under it ("Omarki" →
+/// Omarchy: 3 of 7); Italian words that merely share a Soundex code are at half
+/// or more ("pass" → push 2/4, "comete" → commit 3/6, "parchetto" → Parakeet 4/8).
+const MAX_PHONETIC_EDIT_SHARE: f64 = 0.45;
+
+/// Normalized distance a match that doesn't sound alike must stay under: about
+/// one typo per eight letters. Handy's 0.18 let "whisky" become "whispy".
+const MAX_PLAIN_DISTANCE: f64 = 0.125;
+
+/// Whether a candidate is close enough to a custom word of `key_len` letters to
+/// be considered at all (the threshold then ranks what passes).
+fn acceptable(edits: usize, key_len: usize, distance: f64, phonetic: bool) -> bool {
+    if phonetic {
+        edits as f64 <= key_len as f64 * MAX_PHONETIC_EDIT_SHARE
+    } else {
+        distance < MAX_PLAIN_DISTANCE
+    }
 }
 
 /// American Soundex code ("Robert" → "R163") of an ASCII-letters word; `None`
@@ -211,6 +240,82 @@ fn split_punctuation(word: &str) -> (&str, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Real transcripts from the author's benchmark (whisper/parakeet/canary on
+    /// the same recordings): what must be corrected, what must be left alone.
+    const CASES: &str = include_str!("../tests/data/vocab-cases.json");
+
+    fn cases() -> serde_json::Value {
+        serde_json::from_str(CASES).expect("vocab-cases.json parses")
+    }
+
+    fn strings(v: &serde_json::Value) -> Vec<String> {
+        v.as_array()
+            .expect("array")
+            .iter()
+            .map(|s| s.as_str().expect("string").to_string())
+            .collect()
+    }
+
+    /// Every input that changes when it shouldn't (or not as expected).
+    fn mismatches(pairs: &[(String, String)], vocab: &[String]) -> Vec<String> {
+        pairs
+            .iter()
+            .filter_map(|(input, expected)| {
+                let got = apply(input, vocab, DEFAULT_THRESHOLD);
+                (got != *expected)
+                    .then(|| format!("{input:?}\n   got {got:?}\n  want {expected:?}"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn benchmark_misspellings_are_corrected() {
+        let c = cases();
+        let vocab = strings(&c["vocabulary"]);
+        let pairs: Vec<(String, String)> = c["corrected"]
+            .as_array()
+            .expect("corrected")
+            .iter()
+            .map(|p| {
+                (
+                    p["input"].as_str().expect("input").to_string(),
+                    p["expected"].as_str().expect("expected").to_string(),
+                )
+            })
+            .collect();
+        let bad = mismatches(&pairs, &vocab);
+        assert!(bad.is_empty(), "{} wrong:\n{}", bad.len(), bad.join("\n"));
+    }
+
+    #[test]
+    fn ordinary_transcripts_are_left_alone() {
+        let c = cases();
+        let vocab = strings(&c["vocabulary"]);
+        let same = |list: &serde_json::Value| -> Vec<(String, String)> {
+            strings(list).into_iter().map(|s| (s.clone(), s)).collect()
+        };
+        let mut bad = mismatches(&same(&c["unchanged"]), &vocab);
+        bad.extend(mismatches(
+            &same(&c["must_not_change"]["sentences_test_vocabulary"]),
+            &vocab,
+        ));
+        bad.extend(mismatches(
+            &same(&c["must_not_change"]["words_test_vocabulary"]),
+            &vocab,
+        ));
+        let user_vocab = strings(&c["user_vocabulary"]);
+        bad.extend(mismatches(
+            &same(&c["must_not_change"]["words_user_vocabulary"]),
+            &user_vocab,
+        ));
+        assert!(
+            bad.is_empty(),
+            "{} false positives:\n{}",
+            bad.len(),
+            bad.join("\n")
+        );
+    }
 
     fn words(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| (*s).to_string()).collect()
