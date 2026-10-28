@@ -1288,7 +1288,8 @@ mod tests {
             .find(|(name, _)| *name == entry)
             .expect("entry point file is embedded");
         assert!(qml.1.contains("function triggerPress(button)"));
-        assert!(qml.1.contains("whispy-client toggle"));
+        // A click opens the settings TUI the binary ships.
+        assert!(qml.1.contains("whispy-daemon settings"));
         assert_eq!(
             omarchy_widget_dir().file_name().and_then(|n| n.to_str()),
             Some(OMARCHY_WIDGET_ID)
