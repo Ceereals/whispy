@@ -6,13 +6,15 @@ Guidance for AI assistants working in this repository.
 
 whispy is **push-to-talk dictation for Hyprland (Wayland)**. Hold/toggle a key,
 speak, release — the transcribed text is injected into the focused field. Speech
-never leaves the machine: a resident daemon keeps a
-[whisper.cpp](https://github.com/ggerganov/whisper.cpp) model in RAM, a thin
+never leaves the machine: a resident daemon keeps a speech model in RAM — NVIDIA
+Parakeet via [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp)
+(`stt.engine = "parakeet"`, the default for new configs) or
+[whisper.cpp](https://github.com/ggerganov/whisper.cpp) (`"whisper"`) — a thin
 client is fired from Hyprland binds, and a [Quickshell](https://quickshell.org)
 pill overlay shows live state.
 
 Target platform is Linux + Wayland (Hyprland), developed on AMD RDNA4 with the
-Vulkan backend (no ROCm). whisper-server's compute backend is selectable via
+Vulkan backend (no ROCm). The STT server's compute backend is selectable via
 `stt.backend` (`auto` / `vulkan` / `cpu`): `auto` builds Vulkan when its loader is
 present, else a CPU build (OpenBLAS-accelerated when `libopenblas` is installed),
 so GPU-less machines work too. It is **not** cross-platform (Linux/Wayland only).
@@ -20,21 +22,30 @@ so GPU-less machines work too. It is **not** cross-platform (Linux/Wayland only)
 ## Architecture
 
 ```
-Hyprland keybind ──► whispy-client ──(unix socket)──► whispy-daemon ──► whisper-server (Vulkan/CPU)
+Hyprland keybind ──► whispy-client ──(unix socket)──► whispy-daemon ──► STT server: whispy-stt | whisper-server
                                                           │
                                                           ├─► state.json ──► Quickshell pill
                                                           └─► inject ──► focused app
 ```
 
-- **whispy-daemon** — resident systemd user service. Supervises a `whisper-server`
+- **whispy-daemon** — resident systemd user service. Supervises the STT server
   child (model stays in RAM), captures audio (PipeWire), filters hallucinations,
   runs the text pipeline (corrections → snippets → optional LLM workflow), injects
   text, and publishes state.
 - **whispy-client** — tiny binary called from Hyprland binds. Sends one command and
   exits fast (no async runtime, no config parsing).
-- **whisper-server** — whisper.cpp built with the backend `stt.backend` selects
-  (Vulkan, or CPU/OpenBLAS). Built and managed per-machine by `whispy-daemon setup`;
-  **not** shipped in releases.
+- **STT server** — the child the daemon supervises, per `stt.engine`. Both take the
+  same CLI (`-m MODEL -l LANG --host H --port P`) and serve the same
+  `POST /inference` (multipart WAV → `verbose_json` subset), so `stt_server.rs` and
+  `stt.rs` don't care which runs (what does differ lives in `engine.rs`):
+  - **whispy-stt** (`crates/stt/`, `"parakeet"`) — our own server on the
+    `transcribe-cpp` crate (CPU by default, `--features vulkan` for the GPU). A
+    separate process on purpose: it keeps C++/Vulkan out of the daemon binary (it
+    must start on GPU-less machines) and a driver crash out of the daemon.
+    Shipped by the AUR package; `setup stt` builds it with cargo otherwise.
+  - **whisper-server** (`"whisper"`) — whisper.cpp built with the backend
+    `stt.backend` selects (Vulkan, or CPU/OpenBLAS). Built and managed per-machine
+    by `whispy-daemon setup whisper`; **not** shipped in releases.
 - **pill UI** — Quickshell layer overlay that reads `state.json` (`ui/quickshell/`).
 - **Omarchy bar widget** — `ui/omarchy/` is an Omarchy 4 bar-widget plugin
   (`whispy.dictation`: `manifest.json` + `whispy.qml`, also reading `state.json`),
@@ -47,7 +58,7 @@ Hyprland keybind ──► whispy-client ──(unix socket)──► whispy-dae
 
 `start` → open PipeWire capture → on `stop`, transcription runs off-thread (client
 returns immediately, UI follows `state.json`) → hallucination filter →
-`pipeline::process` (corrections, snippets, AI workflow) → inject → flash
+`pipeline::process` (vocabulary fuzzy-fix on Parakeet, corrections, snippets, AI workflow) → inject → flash
 `success`/`error` and revert to `idle`.
 
 ## Workspace layout
@@ -58,6 +69,7 @@ Cargo workspace (`resolver = "3"`, `edition = "2024"`, MSRV `rust-version = 1.88
 |-------|------|------|
 | `whispy-common` | `crates/common/` | Shared IPC protocol + state types (`Cmd`, `Resp`, `State`, `StateSnapshot`). Serde only, no logic. |
 | `whispy-daemon` | `crates/daemon/` | The resident service and the `setup` bootstrap. All the real logic. |
+| `whispy-stt` | `crates/stt/` | Parakeet STT server on transcribe.cpp, whisper-server compatible (`multipart.rs`, `reply.rs` are the pure, tested wire format). Builds C++ via cmake; `.cargo/config.toml` sets `TRANSCRIBE_CMAKE_ARGS` (no system BLAS). |
 | `whispy-client` | `crates/client/` | Thin sync client invoked from Hyprland binds. |
 
 ### Daemon modules (`crates/daemon/src/`)
@@ -68,8 +80,10 @@ Cargo workspace (`resolver = "3"`, `edition = "2024"`, MSRV `rust-version = 1.88
 | `app.rs` | `App` — maps socket commands to the capture→transcribe→filter→inject flow; owns the active `Session` (capture + its `AppContext`, handed to the transcribe thread) and an inject lock so overlapping clips paste one at a time. |
 | `server.rs` | Unix-socket server: line-based JSON (`Cmd` in, `Resp` out), polls a shutdown flag for clean SIGTERM exit. |
 | `audio.rs` | PipeWire capture via `pw-record` (raw s16le mono), RMS metering, gain, clip limits, trailing-silence auto-stop, peak normalization. |
-| `whisper.rs` | Spawns and supervises the `whisper-server` child; waits for its port; a monitor thread in `main` polls `is_alive` and `restart`s it if it dies; kills it on shutdown. |
-| `stt.rs` | HTTP client to whisper-server's `/inference` (multipart WAV, `verbose_json`); parses transcript + confidence signals. |
+| `engine.rs` | `Engine` (`stt.engine`: `Whisper` \| `Parakeet`, serde-parsed): owns what differs per engine — server name/binary/extra args, model file + download source (URL, SHA-256), `setup` step, and the vocabulary strategy (`Prompt` for whisper, `Correct` via `vocab.rs` for Parakeet). Callers ask the engine instead of branching on it. |
+| `stt_server.rs` | Spawns and supervises the STT server child (`whispy-stt` or `whisper-server`, per `Engine`); waits for its port; a monitor thread in `main` polls `is_alive` and `restart`s it if it dies; kills it on shutdown. |
+| `vocab.rs` | Fuzzy custom-vocabulary correction (Levenshtein + Soundex over 1–3 word windows, ported from Handy) for Parakeet, which can't take whisper's prompt bias. |
+| `stt.rs` | HTTP client to the STT server's `/inference` (multipart WAV, `verbose_json`); parses transcript + confidence signals. |
 | `filter.rs` | Hallucination filter: confidence thresholds → punctuation-only rejection → exact + fuzzy (`strsim`) blacklist match. |
 | `pipeline.rs` | Post-transcription text pipeline: corrections → snippets → AI workflow selection + LLM transform. Never fails (falls back to raw text). |
 | `llm.rs` | Minimal OpenAI-compatible chat client (local ollama by default) for AI workflows. |
@@ -77,7 +91,7 @@ Cargo workspace (`resolver = "3"`, `edition = "2024"`, MSRV `rust-version = 1.88
 | `inject.rs` | Text injection: `paste` mode (`wl-copy` + `ydotool` Ctrl+V, clipboard save/restore) or `type` mode (`wtype`). |
 | `state.rs` | `StatePublisher` writes `state.json` atomically (tmp + rename); `Status` keeps in-memory + on-disk snapshot in sync and flashes transient states. |
 | `config.rs` | TOML config; built-in defaults embedded via `include_str!`; `Config::validate` rejects bad config at startup. |
-| `setup.rs` | `whispy-daemon setup` — idempotent one-shot bootstrap (build whisper.cpp, fetch model, ydotool perms, seed config, install systemd unit, opt-in Quickshell), then prints keybinds for the detected config (`HyprConfig`: Omarchy 4 Lua / Omarchy 3 / Hyprland Lua / hyprlang). |
+| `setup.rs` | `whispy-daemon setup` — idempotent one-shot bootstrap (install the STT engine: `whispy-stt` via cargo or whisper.cpp build; fetch + verify its model; ydotool perms, seed config, install systemd unit, opt-in Quickshell), then prints keybinds for the detected config (`HyprConfig`: Omarchy 4 Lua / Omarchy 3 / Hyprland Lua / hyprlang). |
 | `stats.rs` | `whispy-daemon stats` — read-only summary of `transcripts.jsonl` (accepted vs dropped by reason) for filter tuning. |
 | `settings/` | `whispy-daemon settings` — ratatui settings TUI (microphone + level meter + test dictation, language, typing, auto-stop, history). `form.rs` is the pure, tested screen state; `store.rs` edits `config.toml` with `toml_edit` so comments survive; `mic.rs` reuses `audio::Recorder` so the meter/test hear what dictation hears. Terminal palette colors only, so it follows the Omarchy theme. |
 
@@ -183,7 +197,11 @@ binaries (not whisper-server/model), publish a GitHub release, and push to the A
 - `state.json` is written atomically (tmp + rename) — never write it in place; the UI
   polls it and must never see a half-written file. Several threads write state, and
   all publishes share one `.tmp` path, so `Status` publishes while holding its lock.
-- whisper-server is launched/supervised by the daemon and respawned in-process by a monitor
+- transcribe.cpp's CMake probes for a system BLAS and can pick a reference `libblas`
+  without the `cblas_*` symbols (Arch), failing the final link of `whispy-stt`. The repo's
+  `.cargo/config.toml` passes `-DTRANSCRIBE_USE_SYSTEM_BLAS=OFF`; `setup stt` passes the
+  same flag itself because `cargo install --git` ignores repo config.
+- whisper-server / whispy-stt is launched/supervised by the daemon and respawned in-process by a monitor
   thread (`main.rs`) if it dies. Don't shell out to start it elsewhere. STT requests are
   bounded by `stt.timeout_secs` so a hung server surfaces an error instead of stalling.
 - Hyprland configs are now Lua (`hyprland.lua`, `hl.bind`) as well as hyprlang

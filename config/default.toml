@@ -3,20 +3,34 @@
 # defaults are baked into the daemon binary.
 
 [stt]
-# whisper-server is launched and supervised by the daemon as a child process.
+# Speech-to-text engine. The daemon runs its server as a supervised child process.
+#   "parakeet" = NVIDIA Parakeet (parakeet-ultra) via whispy-stt on transcribe.cpp:
+#                ~6x faster than whisper, punctuates well, and returns nothing on
+#                silence instead of a hallucinated "Thank you." (25 European languages)
+#   "whisper"  = whisper.cpp's whisper-server: ~100 languages, takes the vocabulary
+#                as a decoding prompt
+# `whispy-daemon setup` installs whichever is chosen (and its model).
+engine = "parakeet"
 host = "127.0.0.1"
 port = 8181
+# --- parakeet engine ---
+# GGUF model (`setup model` downloads parakeet-ultra Q8_0, ~740 MB, checksum-verified).
+parakeet_model_path = "~/.local/share/whispy/models/parakeet-ultra-Q8_0.gguf"
+# whispy-stt binary; empty = installed next to whispy-daemon, else on PATH.
+parakeet_bin = ""
+# --- whisper engine ---
 # Model name (informational) + path to the ggml weights. Set after the Step 1 benchmark.
 model = "large-v3-turbo-q5_0"
 model_path = "~/.local/share/whisper.cpp/models/ggml-large-v3-turbo-q5_0.bin"
-# "auto" lets whisper detect IT/EN per clip (code-switching).
-language = "auto"
 server_bin = "~/.local/share/whisper.cpp/build/bin/whisper-server"
-# Compute backend `whispy-daemon setup whisper` builds whisper-server with:
+# --- both engines ---
+# "auto" detects the language of each clip (switch IT/EN freely), or an ISO code.
+language = "auto"
+# Compute backend. whisper-server is built with it (`setup whisper`) and keeps
+# that build; whispy-stt is built with it (`setup stt`) and re-reads it at start.
 #   "auto"   = Vulkan if the loader is present, else CPU (default)
 #   "vulkan" = force the Vulkan GPU backend (needs libvulkan + a GPU ICD)
-#   "cpu"    = CPU only (auto-enables OpenBLAS when `libopenblas` is installed)
-# Only read at build time; an already-built binary keeps whatever it was built with.
+#   "cpu"    = CPU only (whisper: auto-enables OpenBLAS when `libopenblas` is installed)
 backend = "auto"
 timeout_secs = 30        # hard cap on one /inference request (guards against a hung GPU)
 

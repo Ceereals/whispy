@@ -1,0 +1,201 @@
+{
+ "_doc": "Casi reali dal benchmark whispy-bench (trascrizioni di whisper/parakeet/canary sulla voce dell'utente). 'corrected': output atteso della correzione fuzzy. 'must_not_change': frasi/parole che oggi l'algoritmo di Handy (Soundex ×0.3, soglia 0.18) corregge per sbaglio. 'unchanged': trascrizioni che non vanno toccate.",
+ "vocabulary": [
+  "whispy",
+  "Hyprland",
+  "Omarchy",
+  "commit",
+  "push"
+ ],
+ "user_vocabulary": [
+  "Hyprland",
+  "Omarchy",
+  "whispy",
+  "Parakeet"
+ ],
+ "threshold": 0.18,
+ "corrected": [
+  {
+   "input": "Ho aggiornato Highland, e adesso la barra di Omarche non mostra più il widget.",
+   "expected": "Ho aggiornato Highland, e adesso la barra di Omarchy non mostra più il widget."
+  },
+  {
+   "input": "Ho aggiornato Hyperland e adesso la barra di Omar Key non mostra più il widget.",
+   "expected": "Ho aggiornato Hyprland e adesso la barra di Omarchy non mostra più il widget."
+  },
+  {
+   "input": "Ho aggiornato Hyperland e adesso la barra di Omarchy non mostra più il widget",
+   "expected": "Ho aggiornato Hyprland e adesso la barra di Omarchy non mostra più il widget"
+  },
+  {
+   "input": "Ho aggiornato Hyperland e adesso la barra di Omarchy non mostra più il widget.",
+   "expected": "Ho aggiornato Hyprland e adesso la barra di Omarchy non mostra più il widget."
+  },
+  {
+   "input": "Ho aggiornato Hyperland e adesso la barra di Omarkey non mostra più il widget.",
+   "expected": "Ho aggiornato Hyprland e adesso la barra di Omarchy non mostra più il widget."
+  },
+  {
+   "input": "Ho aggiornato Hyperland e adesso la barra di Omarki non mostra più il widget.",
+   "expected": "Ho aggiornato Hyprland e adesso la barra di Omarchy non mostra più il widget."
+  },
+  {
+   "input": "Ho aggiornato Hyperland, e adesso la barra di Omarche non mostra più il widget.",
+   "expected": "Ho aggiornato Hyprland, e adesso la barra di Omarchy non mostra più il widget."
+  },
+  {
+   "input": "Ho aggiornato iPerlande e adesso la barra di Omar Key non mostra più il widget.",
+   "expected": "Ho aggiornato iPerlande e adesso la barra di Omarchy non mostra più il widget."
+  },
+  {
+   "input": "I updated Aiperlande, and now the Omarki bar doesn't show the widget.",
+   "expected": "I updated Aiperlande, and now the Omarchy bar doesn't show the widget."
+  },
+  {
+   "input": "I've updated Hyperland and now the Omar key bar doesn't show the widget.",
+   "expected": "I've updated Hyprland and now the Omarchy bar doesn't show the widget."
+  },
+  {
+   "input": "I've updated Hyperland and now the Omarki bar doesn't show the widget.",
+   "expected": "I've updated Hyprland and now the Omarchy bar doesn't show the widget."
+  },
+  {
+   "input": "I've updated why per lande, and now the Omarkie bar doesn't show the widget.",
+   "expected": "I've updated why per lande, and now the Omarchy bar doesn't show the widget."
+  },
+  {
+   "input": "Stasera ho cenato fuori, poi sono tornato a casa e ho lavorato su Whisby fino a tardi.",
+   "expected": "Stasera ho cenato fuori, poi sono tornato a casa e ho lavorato su Whispy fino a tardi."
+  },
+  {
+   "input": "Stasera ho cenato fuori. Then I came back home and worked on Wispy until late.",
+   "expected": "Stasera ho cenato fuori. Then I came back home and worked on Whispy until late."
+  },
+  {
+   "input": "Stay there until 18:40, then I came back home and worked on Whisby until late.",
+   "expected": "Stay there until 18:40, then I came back home and worked on Whispy until late."
+  },
+  {
+   "input": "Tonight I dined outside, then came back home and worked on Whisby until late.",
+   "expected": "Tonight I dined outside, then came back home and worked on Whispy until late."
+  },
+  {
+   "input": "Tonight I'll be out for dinner, then I came back home and worked on Whisby until late.",
+   "expected": "Tonight I'll be out for dinner, then I came back home and worked on Whispy until late."
+  }
+ ],
+ "must_not_change": {
+  "sentences_test_vocabulary": [
+   "Tomorrow morning I've to call the accountant and then pass in the bank.",
+   "Tomorrow morning I've to call the accountant and then pass it in bank.",
+   "domani mattina devo chiamare il commercialista e poi pass are in banca"
+  ],
+  "words_test_vocabulary": [
+   "pesa",
+   "pesi",
+   "posa",
+   "pass",
+   "comete",
+   "cometa",
+   "comodi",
+   "whisky"
+  ],
+  "words_user_vocabulary": [
+   "paracadute",
+   "parchetto",
+   "parchetti",
+   "whisky"
+  ]
+ },
+ "unchanged": [
+  "Apri una richiesta di ritirata con la correzione e chiedi una revisione domani.",
+  "Can you see how Computis' public APIs are managed in this new PR?",
+  "Can you see how the public APIs of Computis are managed in this new PR?",
+  "Ciao, sto testando anche il riconoscimento vocale in inglese.",
+  "Do you think it's a good idea to use ePara Kit or stay on Whisper?",
+  "Domani mattina devo chiamare il commercialista e poi passare in banca.",
+  "Hi there, I am testing the speech recognition in English as well.",
+  "Hi there, I'm testing speech recognition in English as well.",
+  "Hi there, I'm testing the speech recognition in English as well",
+  "Hi there, I'm testing the speech recognition in English as well.",
+  "Hi there. I'm testing the speech recognition in English as well.",
+  "I'm tired, would like to go to bed soon.",
+  "I'm tired, would re-end the letter, trap,",
+  "I'm tired, would re-end the letter, trap-off.",
+  "I'm tired, wouldn't want to go to bed soon.",
+  "Il demone resta in memoria con il modello caricato, così la trascrizione è veloce",
+  "Il demone resta in memoria con il modello caricato, così la trascrizione è veloce.",
+  "Il volpe marrone veloce salta sopra il cane pigro, ma solo nei fine settimana.",
+  "La rapida volpe marrone salta sopra il cane pigro, ma solo nei fine settimana.",
+  "La volpe marrone veloce salta sopra il cane pigro, ma solo nei fine settimana.",
+  "Mi sono fermato fuori, poi sono tornato a casa e ho lavorato su Whispery fino a tardi.",
+  "Oggi provo la dettatura vocale per vedere se riconosce bene quello che dico",
+  "Oggi provo la dettatura vocale per vedere se riconosce bene quello che dico.",
+  "Oggi provo la dittatura vocale per vedere se riconosce bene quello che dico.",
+  "Per favore, apri la richiesta con la correzione e chiedi una revisione domani.",
+  "Per favore, apri la richiesta di pull con la correzione e chiedi una revisione domani.",
+  "Please open a pull request with a fix and ask for a review tomorrow",
+  "Please open a pull request with a fix and ask for a review tomorrow.",
+  "Please open a pull request with the fix and ask for a review tomorrow",
+  "Please open a pull request with the fix and ask for a review tomorrow.",
+  "Please open up request with the fix and ask for a review tomorrow.",
+  "Puoi vedere come vengono gestite le Public API di Computees in questa nuova PR?",
+  "Puoi vedere come vengono gestite le pubbliche API di Computis in questa nuova PR?",
+  "Puoi vedere come vengono gestite le pubbliche API di Computys in questa nuova PR?",
+  "Puoi vedere come vengono gestite le public API di Computees in questa nuova PR?",
+  "Puoi vedere come vengono gestite le public API di Computies in questa nuova PR?",
+  "Puoi vedere come vengono gestite le public API di computes in questa nuova PR?",
+  "Remember to do the commit and push before closing the portable.",
+  "Remember to do the commit and push before you close the portable.",
+  "Remember to do the commit and push before you close the portatile.",
+  "Remember to do the commit and the push before you close the portatile.",
+  "Ricordami di fare il commit e il push prima di chiudere il portatile",
+  "Ricordami di fare il commit e il push prima di chiudere il portatile.",
+  "Second, you conviene using Parakit or stay on Whisper?",
+  "Second, you convince using Parakit or stay on Whisper?",
+  "Secondly, should you use ePara Kit or stay on Whisper?",
+  "Secondo te conviene usare Parakeit oppure restare su Whisper?",
+  "Secondo te conviene usare Parakit oppure restare su Whisper ?",
+  "Secondo te conviene usare Parakit oppure restare su Whisper?",
+  "Secondo te conviene usare i Parake oppure restare su Whisper?",
+  "Secondo te conviene usare i Parakeit oppure restare su Whisper?",
+  "Secondo te conviene usare i Parakit oppure restare su Whisper?",
+  "Secondo te conviene usare i parakit oppure restare su Whisper?",
+  "Secondo te è conveniente usare i Parakit oppure restare su Whisper?",
+  "Segundo te conviene usar el paraquít o restar su whisper.",
+  "Segundo te conviene usar para kit, oppure restare su whisper.",
+  "Si prega di aprire una richiesta di ritiro con la soluzione e di chiedere una revisione domani.",
+  "Sono stanco, vorrei andare a letto tra poco",
+  "Sono stanco, vorrei andare a letto tra poco.",
+  "Stasera ho cenato fuori then I came back home and work on whispery until late.",
+  "Stasera ho cenato fuori, then I came back home and work on un whispy until late.",
+  "Stasera ho cenato fuori, then I came back home and work on whispy until late.",
+  "Stasera ho cenato fuori, then I came back home and worked on Whispy until late",
+  "Stasera ho cenato fuori, then I came back home and worked on Whispy until late.",
+  "Stasera ho cenato fuori, then I came back home and worked on whispers until late.",
+  "Stasera ho cenato fuori, then I came back home and working on whispy until late.",
+  "Stasera ho cenato fuori. Then I came back home and work on whispers until late.",
+  "Stasera ho channato fuori, then I came back home and work on whispers until late",
+  "Thank you.",
+  "The demo remains in memory with the model loaded so the transcription is fast.",
+  "The demo remains in memory with the model loaded, so the transcription is fast.",
+  "The demon remains in memory with the model loaded, so the transcription is fast.",
+  "The quick brown fox jumps over the lazy dog but only on weekends",
+  "The quick brown fox jumps over the lazy dog but only on weekends.",
+  "The quick brown fox jumps over the lazy dog, but only on weekends",
+  "The quick brown fox jumps over the lazy dog, but only on weekends.",
+  "Today I'll try the dictation vocal to see if you recognize well what I'm saying.",
+  "Today I'll try the vocal dictation to see if you recognize well what I'm saying.",
+  "Today I'm trying to recognize what I'm saying by vocal dictation.",
+  "Tomorrow morning I have to call the accountant and then go to the bank.",
+  "Tomorrow morning I'll be calling the accountant and then going to the bank.",
+  "Tonight I've ceased out, then I came back home and worked on Whispy until late.",
+  "You can see how the public APIs of Computis are managed in this new PR.",
+  "You can see how the public APIs of Computis are managed in this new PR?",
+  "domani mattina devo chiamare i commercialista e poi passare in banca",
+  "domani mattina devo chiamare i commercialisti e poi passare in banca",
+  "ricordami di fare il commit e il push prima di chiudere il portatile",
+  "secondo te conviene usare Parakit oppure restare su Whisper",
+  "segundo te conviene usar para kit oppure restare su whisper"
+ ]
+}

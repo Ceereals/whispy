@@ -7,6 +7,7 @@ use std::path::Path;
 use toml_edit::{DocumentMut, Item, Value};
 
 use crate::config::Config;
+use crate::engine::Engine;
 
 /// The settings the TUI edits.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,6 +20,8 @@ pub struct Values {
     pub mode: String,
     /// `audio.silence_timeout_ms` (0 = off).
     pub silence_timeout_ms: u64,
+    /// `stt.engine`.
+    pub engine: Engine,
 }
 
 impl Values {
@@ -29,6 +32,7 @@ impl Values {
             language: cfg.stt.language.clone(),
             mode: cfg.injection.mode.clone(),
             silence_timeout_ms: cfg.audio.silence_timeout_ms,
+            engine: cfg.stt.engine,
         }
     }
 }
@@ -41,6 +45,7 @@ pub fn apply(text: &str, values: &Values) -> Result<String, String> {
     set(&mut doc, "audio", "source", values.source.as_str().into());
     set(&mut doc, "stt", "language", values.language.as_str().into());
     set(&mut doc, "injection", "mode", values.mode.as_str().into());
+    set(&mut doc, "stt", "engine", values.engine.as_str().into());
     let timeout = i64::try_from(values.silence_timeout_ms).map_err(|e| e.to_string())?;
     set(&mut doc, "audio", "silence_timeout_ms", timeout.into());
     let out = doc.to_string();
@@ -92,6 +97,7 @@ mod tests {
             language: "it".into(),
             mode: "paste".into(),
             silence_timeout_ms: 1500,
+            engine: Engine::Parakeet,
         }
     }
 

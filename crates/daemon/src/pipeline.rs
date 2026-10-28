@@ -1,4 +1,5 @@
-//! Post-transcription text pipeline: corrections -> snippets -> AI workflow.
+//! Post-transcription text pipeline: vocabulary (Parakeet) -> corrections ->
+//! snippets -> AI workflow.
 
 use std::collections::BTreeMap;
 use std::process::Command;
@@ -7,6 +8,7 @@ use tracing::{info, warn};
 
 use crate::config::{Config, Workflow};
 use crate::display::DisplayServer;
+use crate::engine::VocabStrategy;
 use crate::inject::InjectBackend;
 use crate::proc;
 
@@ -29,6 +31,16 @@ pub fn process(
     ctx: &AppContext,
     backend: &dyn InjectBackend,
 ) -> String {
+    // Engines that can't take the vocabulary as a decoding prompt get their
+    // transcript corrected instead (the prompt side is wired up in `main`).
+    let text = match cfg.stt.engine.vocabulary(&cfg.dictionary.vocabulary) {
+        VocabStrategy::Correct => crate::vocab::apply(
+            &text,
+            &cfg.dictionary.vocabulary,
+            crate::vocab::DEFAULT_THRESHOLD,
+        ),
+        VocabStrategy::Prompt(_) | VocabStrategy::Off => text,
+    };
     let text = apply_corrections(&text, &cfg.dictionary.corrections);
     let text = apply_snippets(&text, &cfg.snippets.entries, backend);
 

@@ -7,6 +7,8 @@
 pub enum SectionKey {
     /// `audio.source`.
     Microphone,
+    /// `stt.engine`.
+    Engine,
     /// `stt.language`.
     Language,
     /// `injection.mode`.

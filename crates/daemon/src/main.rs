@@ -1,6 +1,6 @@
 //! whispy dictation daemon.
 //!
-//! Holds the whisper-server child resident, captures audio on demand, runs the
+//! Holds the STT server child resident, captures audio on demand, runs the
 //! hallucination filter, and injects the transcript. Clients drive it over a Unix
 //! socket; the Quickshell pill UI reads `state.json`.
 
@@ -8,6 +8,7 @@ mod app;
 mod audio;
 mod config;
 mod display;
+mod engine;
 mod filter;
 mod inject;
 mod llm;
@@ -19,7 +20,8 @@ mod setup;
 mod state;
 mod stats;
 mod stt;
-mod whisper;
+mod stt_server;
+mod vocab;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -35,13 +37,14 @@ use whispy_common::{State, StateSnapshot};
 use crate::app::App;
 use crate::config::Config;
 use crate::display::{Backend, DisplayServer};
+use crate::engine::VocabStrategy;
 use crate::filter::Hallucinations;
 use crate::state::{StatePublisher, Status, now};
 use crate::stt::SttClient;
-use crate::whisper::WhisperServer;
+use crate::stt_server::SttServer;
 
-/// How long to wait for whisper-server to load the model and start listening.
-const WHISPER_READY_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long to wait for the STT server to load the model and start listening.
+const STT_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Parser, Debug)]
 #[expect(
@@ -115,9 +118,9 @@ fn main() -> ExitCode {
 }
 
 fn run(cfg: Config) -> std::io::Result<()> {
-    info!(model = %cfg.stt.model, "starting whispy-daemon");
+    info!(engine = %cfg.stt.engine, model = %cfg.stt.model_file().display(), "starting whispy-daemon");
 
-    // Bail before touching whisper-server if a daemon is already live: a second
+    // Bail before touching the STT server if a daemon is already live: a second
     // instance would otherwise reuse its server, steal its socket, and delete it on exit.
     server::ensure_not_running(&cfg.ipc.socket_path())?;
 
@@ -156,37 +159,39 @@ fn run(cfg: Config) -> std::io::Result<()> {
     }));
     let status = Status::new(shared, publisher, cfg.ipc.state_max_hz);
 
-    // Bring up whisper-server (model resident) before announcing idle.
-    let whisper_log = config::state_dir().join("whisper-server.log");
-    if let Some(parent) = whisper_log.parent() {
+    // Bring up the STT server (model resident) before announcing idle.
+    let server_log = config::state_dir().join("whisper-server.log");
+    if let Some(parent) = server_log.parent() {
         std::fs::create_dir_all(parent)?;
     }
     // Rotate only here, at daemon start: in-process restarts append, so the output
     // of a crash survives the monitor respawning the server.
-    if let Err(e) = config::rotate_if_larger(&whisper_log, config::WHISPER_LOG_MAX_BYTES) {
+    if let Err(e) = config::rotate_if_larger(&server_log, config::WHISPER_LOG_MAX_BYTES) {
         warn!(error = %e, "could not rotate whisper-server.log");
     }
-    let whisper = Arc::new(Mutex::new(WhisperServer::spawn(&cfg.stt, &whisper_log)?));
-    if !whisper
+    let stt_server = Arc::new(Mutex::new(SttServer::spawn(&cfg.stt, &server_log)?));
+    if !stt_server
         .lock()
-        .expect("whisper lock")
-        .wait_ready(WHISPER_READY_TIMEOUT, &shutdown)
+        .expect("stt server lock")
+        .wait_ready(STT_READY_TIMEOUT, &shutdown)
     {
-        whisper.lock().expect("whisper lock").shutdown();
+        stt_server.lock().expect("stt server lock").shutdown();
         return Err(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
             format!(
-                "whisper-server did not become ready (see {} for details)",
-                whisper_log.display()
+                "{} did not become ready (see {} for details)",
+                cfg.stt.engine.server_name(),
+                server_log.display()
             ),
         ));
     }
-    info!("whisper-server ready");
+    info!("{} ready", cfg.stt.engine.server_name());
 
-    // Monitor: if whisper-server dies after startup, respawn it. Polls often enough
+    // Monitor: if the STT server dies after startup, respawn it. Polls often enough
     // that SIGTERM-driven shutdown stays responsive.
     let monitor = {
-        let whisper = Arc::clone(&whisper);
+        let server_name = cfg.stt.engine.server_name();
+        let stt_server = Arc::clone(&stt_server);
         let shutdown = Arc::clone(&shutdown);
         std::thread::spawn(move || {
             while !shutdown.load(std::sync::atomic::Ordering::Relaxed) {
@@ -194,23 +199,23 @@ fn run(cfg: Config) -> std::io::Result<()> {
                 if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
                 }
-                let mut w = whisper.lock().expect("whisper lock");
+                let mut w = stt_server.lock().expect("stt server lock");
                 if !w.is_alive() {
-                    match w.restart(WHISPER_READY_TIMEOUT, &shutdown) {
-                        Ok(true) => info!("whisper-server restarted"),
-                        Ok(false) => warn!("whisper-server restart did not become ready"),
-                        Err(e) => error!(error = %e, "failed to restart whisper-server"),
+                    match w.restart(STT_READY_TIMEOUT, &shutdown) {
+                        Ok(true) => info!("{server_name} restarted"),
+                        Ok(false) => warn!("{server_name} restart did not become ready"),
+                        Err(e) => error!(error = %e, "failed to restart {server_name}"),
                     }
                 }
             }
         })
     };
 
-    // Custom vocabulary biases whisper-server's decoding via the prompt field.
-    let vocab_prompt = if cfg.dictionary.vocabulary.is_empty() {
-        None
-    } else {
-        Some(cfg.dictionary.vocabulary.join(", "))
+    // The engine decides how the custom vocabulary reaches it: a decoding prompt
+    // (whisper) here, or a correction of the transcript in `pipeline` (Parakeet).
+    let vocab_prompt = match cfg.stt.engine.vocabulary(&cfg.dictionary.vocabulary) {
+        VocabStrategy::Prompt(prompt) => Some(prompt),
+        VocabStrategy::Correct | VocabStrategy::Off => None,
     };
     let stt = SttClient::new(&cfg.stt, vocab_prompt);
     let blacklist = load_blacklist(&cfg);
@@ -224,7 +229,7 @@ fn run(cfg: Config) -> std::io::Result<()> {
 
     info!("shutting down");
     monitor.join().ok();
-    whisper.lock().expect("whisper lock").shutdown();
+    stt_server.lock().expect("stt server lock").shutdown();
     result
 }
 

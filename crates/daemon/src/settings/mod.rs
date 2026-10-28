@@ -1,6 +1,6 @@
 //! `whispy-daemon settings`: a terminal UI for the everyday settings — microphone
-//! (with a live level meter and a test dictation), language, typing mode, and the
-//! silence auto-stop — plus the recent transcript history.
+//! (with a live level meter and a test dictation), speech engine, language,
+//! typing mode, and the silence auto-stop — plus the recent transcript history.
 //!
 //! It edits the user's `config.toml` in place (comments kept, see [`store`]) and
 //! restarts the daemon on save, since the daemon reads its config only at start.
@@ -23,6 +23,7 @@ use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::config::{self, Config};
+use crate::engine::Engine;
 use crate::proc;
 use crate::stt::SttClient;
 use form::{Body, Choice, Effect, Form, HistoryEntry, Input, Section, SectionKey};
@@ -176,11 +177,30 @@ impl App {
             language: get(SectionKey::Language),
             mode: get(SectionKey::Typing),
             silence_timeout_ms: get(SectionKey::AutoStop).parse().unwrap_or(0),
+            engine: Engine::parse(&get(SectionKey::Engine)).unwrap_or_default(),
         }
     }
 
+    /// The daemon config these settings would produce, validated like the daemon
+    /// does at start: a missing engine binary or model must not be saved, or the
+    /// restart would leave whispy down.
+    fn check(&self, values: &Values) -> Result<(), String> {
+        let mut cfg = self.cfg.clone();
+        cfg.audio.source.clone_from(&values.source);
+        cfg.stt.language.clone_from(&values.language);
+        cfg.injection.mode.clone_from(&values.mode);
+        cfg.audio.silence_timeout_ms = values.silence_timeout_ms;
+        cfg.stt.engine = values.engine;
+        cfg.validate()
+    }
+
     fn save(&mut self) {
-        if let Err(e) = store::save(&self.path, &self.values()) {
+        let values = self.values();
+        if let Err(e) = self.check(&values) {
+            self.status = Some(format!("✗ Not saved: {e}"));
+            return;
+        }
+        if let Err(e) = store::save(&self.path, &values) {
             self.status = Some(format!("✗ Not saved: {e}"));
             return;
         }
@@ -268,6 +288,24 @@ fn build_sections(values: &Values) -> Vec<Section> {
                 chosen: mic_chosen,
             },
         },
+        radio(
+            SectionKey::Engine,
+            "Engine",
+            "The speech-to-text model. Switching needs it installed: whispy-daemon setup.",
+            &[
+                (
+                    "Parakeet",
+                    Engine::Parakeet.as_str(),
+                    "fastest, punctuates well, no text on silence · 25 European languages",
+                ),
+                (
+                    "Whisper",
+                    Engine::Whisper.as_str(),
+                    "~100 languages · vocabulary as a decoding prompt",
+                ),
+            ],
+            values.engine.as_str(),
+        ),
         radio(
             SectionKey::Language,
             "Language",

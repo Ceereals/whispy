@@ -1,8 +1,11 @@
-//! Supervises the whisper-server child process (whisper.cpp Vulkan build).
+//! Supervises the STT server child process: whisper.cpp's whisper-server, or
+//! `whispy-stt` (transcribe.cpp/Parakeet) when `stt.engine = "parakeet"`. Both take
+//! the same command line and serve the same `/inference` API, so the rest of the
+//! daemon doesn't care which one runs.
 //!
-//! Spawns `cfg.stt.server_bin` with the configured model, waits for the HTTP port
+//! Spawns the engine's server binary with the configured model, waits for the HTTP port
 //! to accept connections, and kills the child on daemon shutdown. A monitor thread
-//! in `main` polls [`WhisperServer::is_alive`] and calls [`WhisperServer::restart`]
+//! in `main` polls [`SttServer::is_alive`] and calls [`SttServer::restart`]
 //! if the child dies after startup — without it the daemon would keep running but
 //! every transcription would fail (systemd only restarts us if *we* exit, not the
 //! child).
@@ -20,14 +23,14 @@ use tracing::{info, warn};
 
 use crate::config::Stt;
 
-/// A running whisper-server child.
-pub struct WhisperServer {
+/// A running STT server child (whisper-server or whispy-stt).
+pub struct SttServer {
     child: Child,
     cfg: Stt,
     log_path: PathBuf,
 }
 
-impl WhisperServer {
+impl SttServer {
     /// Spawn whisper-server with the configured model. Its stdout/stderr go to
     /// `log_path` for post-mortem debugging.
     pub fn spawn(cfg: &Stt, log_path: &Path) -> std::io::Result<Self> {
@@ -39,14 +42,15 @@ impl WhisperServer {
         })
     }
 
-    /// Launch one whisper-server process (shared by `spawn` and `restart`).
+    /// Launch one STT server process (shared by `spawn` and `restart`).
     fn start_child(cfg: &Stt, log_path: &Path) -> std::io::Result<Child> {
         let bin = cfg.server_bin_path();
         let model = cfg.model_file();
+        let name = cfg.engine.server_name();
         if !bin.exists() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("whisper-server binary not found at {}", bin.display()),
+                format!("{name} binary not found at {}", bin.display()),
             ));
         }
         if !model.exists() {
@@ -62,11 +66,11 @@ impl WhisperServer {
             .create(true)
             .append(true)
             .open(log_path)?;
-        writeln!(log, "--- whispy: starting whisper-server ---")?;
+        writeln!(log, "--- whispy: starting {name} ---")?;
         let errlog = log.try_clone()?;
-        info!(bin = %bin.display(), model = %model.display(), port = cfg.port, "spawning whisper-server");
-        Command::new(&bin)
-            .arg("-m")
+        info!(bin = %bin.display(), model = %model.display(), port = cfg.port, "spawning {name}");
+        let mut cmd = Command::new(&bin);
+        cmd.arg("-m")
             .arg(&model)
             .arg("-l")
             .arg(&cfg.language)
@@ -74,7 +78,8 @@ impl WhisperServer {
             .arg(&cfg.host)
             .arg("--port")
             .arg(cfg.port.to_string())
-            .stdin(Stdio::null())
+            .args(cfg.engine.extra_server_args(cfg));
+        cmd.stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(errlog))
             .spawn()
@@ -90,7 +95,7 @@ impl WhisperServer {
         {
             Ok(addrs) => addrs.collect(),
             Err(e) => {
-                warn!(host = %self.cfg.host, error = %e, "cannot resolve whisper-server host");
+                warn!(host = %self.cfg.host, error = %e, "cannot resolve the STT server host");
                 return false;
             }
         };
@@ -122,7 +127,10 @@ impl WhisperServer {
         timeout: Duration,
         shutdown: &Arc<AtomicBool>,
     ) -> std::io::Result<bool> {
-        warn!("whisper-server is not running; restarting");
+        warn!(
+            "{} is not running; restarting",
+            self.cfg.engine.server_name()
+        );
         self.child.wait().ok();
         self.child = Self::start_child(&self.cfg, &self.log_path)?;
         Ok(self.wait_ready(timeout, shutdown))
@@ -158,7 +166,7 @@ mod tests {
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn test child");
-        let mut server = WhisperServer {
+        let mut server = SttServer {
             child,
             cfg: test_cfg(),
             log_path: PathBuf::from("/dev/null"),
@@ -182,7 +190,7 @@ mod tests {
         let mut cfg = test_cfg();
         cfg.host = "localhost".to_string();
         cfg.port = 1; // nothing listens here
-        let mut server = WhisperServer {
+        let mut server = SttServer {
             child,
             cfg,
             log_path: PathBuf::from("/dev/null"),
