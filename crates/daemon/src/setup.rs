@@ -694,7 +694,13 @@ fn install_omarchy_widget() -> Result<(), String> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-    if exec(Command::new("omarchy-bar").args(["put", id])).is_ok() {
+    // Where Omarchy's own (Voxtype) dictation indicator sits: right after
+    // omarchy.indicators in the center. Fall back to the manifest's default
+    // section when that widget isn't on the bar.
+    let placed =
+        exec(Command::new("omarchy-bar").args(["put", id, "--after", "omarchy.indicators"]))
+            .or_else(|_| exec(Command::new("omarchy-bar").args(["put", id])));
+    if placed.is_ok() {
         println!(
             "  move it with `omarchy bar move {id} --section left|center|right`;\n  \
              remove it with `omarchy plugin disable {id}`"

@@ -4,7 +4,7 @@
   "name": "whispy",
   "version": "1.0.0",
   "author": "whispy",
-  "description": "whispy dictation state; click to dictate",
+  "description": "whispy dictation state; click for settings, right click to dictate",
   "kinds": [
     "bar-widget"
   ],
@@ -13,10 +13,10 @@
   },
   "barWidget": {
     "displayName": "Dictation (whispy)",
-    "description": "Live whispy state: idle, recording, transcribing. Left click toggles dictation, right or middle click cancels.",
+    "description": "Live whispy state: idle, recording, transcribing. Click opens the settings (or stops a recording), right click toggles dictation, middle click cancels.",
     "category": "Status",
     "allowMultiple": false,
-    "defaultSection": "right",
+    "defaultSection": "center",
     "defaults": {
       "hideWhenIdle": false
     },

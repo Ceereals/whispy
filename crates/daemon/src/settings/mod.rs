@@ -33,6 +33,8 @@ use store::Values;
 const TICK: Duration = Duration::from_millis(50);
 /// How many transcripts the History section shows.
 const HISTORY_LEN: usize = 50;
+/// Terminal title; the Omarchy bar widget matches it to focus an open window.
+const WINDOW_TITLE: &str = "whispy-settings";
 /// Bound on `systemctl --user try-restart`.
 const RESTART_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -47,6 +49,13 @@ pub fn run(cfg: &Config, config_path: Option<&Path>) -> ExitCode {
     };
     let mut app = App::new(cfg.clone(), path);
     let mut terminal = ratatui::init();
+    // The bar widget finds an open settings window by this title and focuses it
+    // (`omarchy-launch-or-focus whispy-settings …`) instead of opening another.
+    ratatui::crossterm::execute!(
+        std::io::stdout(),
+        ratatui::crossterm::terminal::SetTitle(WINDOW_TITLE)
+    )
+    .ok();
     let result = app.event_loop(&mut terminal);
     ratatui::restore();
     match result {

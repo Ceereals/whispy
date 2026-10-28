@@ -147,15 +147,20 @@ bindd  = SUPER CTRL SHIFT, X, Cancel dictation, exec, whispy-client cancel
 enough for whispy to take over the keys, but Voxtype still keeps its own model
 loaded. Remove it to free the memory: `omarchy-voxtype-remove`.
 
-**Status UI.** Omarchy's own dictation icon follows Voxtype only, so whispy brings
-two of its own; use either or both:
+**Status UI.** Omarchy's own dictation icon (the "Dictation" entry of
+`omarchy.indicators`) follows Voxtype only, and its click opens Voxtype's config;
+the first `setup` hides it. whispy brings two status UIs of its own; use either or
+both:
 
 - **Bar widget.** On Omarchy 4, `setup` installs whispy as an Omarchy bar widget
-  plugin (`whispy.dictation`, in `~/.config/omarchy/plugins/`) and puts it on the
-  right of the bar. Re-run just this step with `whispy-daemon setup omarchy`.
+  plugin (`whispy.dictation`, in `~/.config/omarchy/plugins/`) and puts it where
+  Omarchy's dictation icon was, right after `omarchy.indicators` in the center.
+  Re-run just this step with `whispy-daemon setup omarchy`.
   It follows `state.json` live: a mic, pulsing red while recording, an hourglass
-  while transcribing, a check or mic-off when done. Left click toggles dictation;
-  right or middle click cancels. Manage it like any Omarchy widget:
+  while transcribing, a check or mic-off when done. Click opens the settings TUI
+  (`whispy-daemon settings`, floating; a second click focuses it) or, while
+  recording, stops; right click toggles dictation; middle click cancels. Manage
+  it like any Omarchy widget:
 
   ```sh
   omarchy bar move whispy.dictation --section left   # or center / right

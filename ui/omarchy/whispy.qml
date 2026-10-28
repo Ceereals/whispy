@@ -6,8 +6,9 @@
 // widget on the bar. It watches the same state.json the pill reads (no polling,
 // no extra processes) and drives the daemon through whispy-client.
 //
-//   left click          toggle dictation
-//   right/middle click  cancel the current recording
+//   left click    open whispy's settings (stops dictation while recording)
+//   right click   toggle dictation
+//   middle click  cancel the current recording
 //
 // Settings (Omarchy's widget settings, or the widget's shell.json entry):
 //   "hideWhenIdle": true   only show while recording/transcribing/flashing
@@ -78,12 +79,31 @@ Item {
 
     readonly property string tooltip: {
         switch (dictationState) {
-        case "recording":    return "whispy: listening (click to stop)"
+        case "recording":    return "whispy: listening \u00b7 click to stop, middle-click to cancel"
         case "transcribing": return "whispy: transcribing"
         case "success":      return "whispy: done"
         case "error":        return "whispy: " + (errorMessage || "error")
-        default:             return "whispy: ready (click to dictate)"
+        default:             return "whispy: ready \u00b7 click for settings, right-click to dictate"
         }
+    }
+
+    // --- Commands ---------------------------------------------------------------
+    // The bar runs commands through `bash -lc` with the shell's environment, which
+    // may lack ~/.cargo/bin (cargo installs). Append it, so packaged binaries still
+    // win and cargo-installed ones are found.
+    readonly property string pathFix: 'export PATH="$PATH:$HOME/.cargo/bin"; '
+    // Settings TUI in a floating terminal, like Omarchy's own TUIs; the TUI titles
+    // its window "whispy-settings", so a second click focuses it instead.
+    readonly property string settingsCommand: pathFix
+        + 'omarchy-launch-or-focus whispy-settings '
+        + '"omarchy-launch-tui --app-id=TUI.float whispy-daemon settings"'
+
+    // The command a click with `button` runs in the current state.
+    function commandFor(button) {
+        if (button === Qt.MiddleButton) return pathFix + "whispy-client cancel"
+        if (button === Qt.RightButton) return pathFix + "whispy-client toggle"
+        if (dictationState === "recording") return pathFix + "whispy-client toggle"
+        return settingsCommand
     }
 
     // --- Bar click-target contract ------------------------------------------
@@ -94,10 +114,7 @@ Item {
 
     function triggerPress(button) {
         if (!bar) return
-        if (button === Qt.RightButton || button === Qt.MiddleButton)
-            bar.run("whispy-client cancel")
-        else
-            bar.run("whispy-client toggle")
+        bar.run(commandFor(button))
     }
 
     onBarChanged: {

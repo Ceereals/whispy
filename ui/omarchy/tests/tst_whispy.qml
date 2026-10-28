@@ -53,11 +53,27 @@ Item {
         }
 
         function test_clicks_drive_the_client() {
+            mod.apply(stateJson("idle"))
             host.ran = []
             mod.triggerPress(Qt.LeftButton)
-            mod.triggerPress(Qt.MiddleButton)
             mod.triggerPress(Qt.RightButton)
-            compare(host.ran, ["whispy-client toggle", "whispy-client cancel", "whispy-client cancel"])
+            mod.triggerPress(Qt.MiddleButton)
+            compare(host.ran.length, 3)
+            verify(host.ran[0].indexOf("whispy-daemon settings") >= 0, host.ran[0])
+            verify(host.ran[0].indexOf("omarchy-launch-or-focus whispy-settings") >= 0, host.ran[0])
+            verify(/whispy-client toggle$/.test(host.ran[1]), host.ran[1])
+            verify(/whispy-client cancel$/.test(host.ran[2]), host.ran[2])
+        }
+
+        function test_left_click_stops_a_recording() {
+            mod.apply(stateJson("recording"))
+            verify(/whispy-client toggle$/.test(mod.commandFor(Qt.LeftButton)))
+            mod.apply(stateJson("idle"))
+        }
+
+        function test_commands_find_cargo_installs() {
+            // The bar's shell may lack ~/.cargo/bin; it is appended, never prepended.
+            verify(mod.commandFor(Qt.RightButton).indexOf('PATH="$PATH:$HOME/.cargo/bin"') >= 0)
         }
 
         function test_states_map_to_glyph_and_color() {
