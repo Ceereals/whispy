@@ -5,7 +5,7 @@
 # local `makepkg -si`). Everywhere else it builds from source with cargo and
 # installs the two binaries under a prefix.
 #
-# After install, run `whispy-daemon setup` to bootstrap whisper.cpp + the model.
+# After install, run `whispy-daemon setup` to bootstrap the speech engine + model.
 #
 # It then chains straight into `whispy-daemon setup` so a fresh machine goes from
 # nothing to ready-to-dictate in one command.
@@ -35,10 +35,26 @@ install_from_source() {
   }
   local prefix="${PREFIX:-$HOME/.local}"
   echo "Building from source (cargo build --release)..."
-  ( cd "$repo_root" && cargo build --release --locked )
+  ( cd "$repo_root" && cargo build --release --locked --workspace --exclude whispy-stt )
   install -Dm755 "$repo_root/target/release/whispy-daemon" "$prefix/bin/whispy-daemon"
   install -Dm755 "$repo_root/target/release/whispy-client" "$prefix/bin/whispy-client"
   echo "Installed whispy-daemon and whispy-client to $prefix/bin"
+
+  # whispy-stt (the Parakeet engine, the default): GPU build when the Vulkan
+  # loader and its build tools are there, else CPU. Needs cmake + a C++ compiler;
+  # if it fails, `whispy-daemon setup` reports what's missing (or switch to
+  # stt.engine = "whisper").
+  local stt_features=()
+  if ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so' && command -v glslc >/dev/null; then
+    stt_features=(--features vulkan)
+  fi
+  echo "Building whispy-stt ${stt_features[*]:-(CPU)}..."
+  if ( cd "$repo_root" && cargo build --release --locked -p whispy-stt "${stt_features[@]}" ); then
+    install -Dm755 "$repo_root/target/release/whispy-stt" "$prefix/bin/whispy-stt"
+    echo "Installed whispy-stt to $prefix/bin"
+  else
+    echo "warning: whispy-stt did not build; \`whispy-daemon setup stt\` will retry and name what's missing" >&2
+  fi
   whispy_daemon_bin="$prefix/bin/whispy-daemon"
   case ":$PATH:" in
     *":$prefix/bin:"*) ;;

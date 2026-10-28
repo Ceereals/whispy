@@ -18,10 +18,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
-      - run: cargo build --release --locked
+      # whispy-stt isn't shipped here: transcribe.cpp tunes it to the build
+      # machine's CPU, so `whispy-daemon setup stt` builds it per machine (the AUR
+      # package builds it too).
+      - run: cargo build --release --locked --workspace --exclude whispy-stt
       - name: Package binaries
         run: |
-          # The two whispy binaries only. whisper-server and the model are NOT
+          # The two whispy binaries only. The STT servers and models are NOT
           # shipped — `whispy-daemon setup` bootstraps them per-machine.
           mkdir -p dist
           cp target/release/whispy-daemon target/release/whispy-client dist/
