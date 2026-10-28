@@ -1,6 +1,6 @@
 # Maintainer: Riccardo Romoli <romoliriccardo.rr@gmail.com>
 pkgname=whispy
-pkgver=0.4.0
+pkgver=0.5.0
 pkgrel=1
 pkgdesc="System-wide push-to-talk dictation for Hyprland/Omarchy, Wayland and X11, powered by Parakeet or whisper.cpp"
 arch=('x86_64')
