@@ -21,6 +21,9 @@ backend = "auto"
 timeout_secs = 30        # hard cap on one /inference request (guards against a hung GPU)
 
 [audio]
+# PipeWire source (node name, see `pactl list sources short`) to record from.
+# Empty = the system default source.
+source = ""
 # whisper's input format; validated at startup, don't change.
 rate = 16000
 channels = 1

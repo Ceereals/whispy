@@ -67,7 +67,11 @@ impl Recorder {
         S: FnOnce() + Send + 'static,
     {
         let mut child = Command::new("pw-record")
-            .args(record_args(self.cfg.rate, self.cfg.channels))
+            .args(record_args(
+                self.cfg.rate,
+                self.cfg.channels,
+                &self.cfg.source,
+            ))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -263,9 +267,14 @@ where
 
 /// Arguments for `pw-record`: headerless (`--raw`) s16 PCM on stdout, which the
 /// reader parses as native little-endian. Without `--raw`, `PipeWire` 1.6 writes a
-/// big-endian Sun AU stream to stdout instead.
-fn record_args(rate: u32, channels: u16) -> Vec<String> {
-    vec![
+/// big-endian Sun AU stream to stdout instead. A non-empty `source` pins the
+/// capture to that `PipeWire` node; empty follows the default source.
+fn record_args(rate: u32, channels: u16, source: &str) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    if !source.is_empty() {
+        args.extend(["--target".into(), source.into()]);
+    }
+    args.extend([
         "--raw".into(),
         "--rate".into(),
         rate.to_string(),
@@ -274,7 +283,8 @@ fn record_args(rate: u32, channels: u16) -> Vec<String> {
         "--format".into(),
         "s16".into(),
         "-".into(),
-    ]
+    ]);
+    args
 }
 
 /// Apply a linear gain with saturation.
@@ -325,7 +335,7 @@ mod tests {
     fn record_args_request_raw_s16_on_stdout() {
         // Regression: without --raw, pw-record emits big-endian AU on stdout and
         // the little-endian reader turns speech into noise.
-        let args = record_args(16000, 1);
+        let args = record_args(16000, 1, "");
         assert_eq!(
             args,
             [
@@ -339,6 +349,12 @@ mod tests {
                 "-"
             ]
         );
+    }
+
+    #[test]
+    fn record_args_target_the_configured_source() {
+        let args = record_args(16000, 1, "podmic-mono");
+        assert_eq!(args[..3], ["--target", "podmic-mono", "--raw"]);
     }
 
     #[test]

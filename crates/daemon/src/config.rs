@@ -86,6 +86,10 @@ pub struct Audio {
     /// silence for the trailing-silence auto-stop. Tune to your mic/gain.
     #[serde(default = "default_silence_rms_threshold")]
     pub silence_rms_threshold: f32,
+    /// `PipeWire` source (node name) to capture from, passed to `pw-record --target`.
+    /// Empty uses the session's default source.
+    #[serde(default)]
+    pub source: String,
 }
 
 fn default_gain() -> f32 {
