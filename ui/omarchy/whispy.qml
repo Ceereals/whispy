@@ -6,9 +6,8 @@
 // widget on the bar. It watches the same state.json the pill reads (no polling,
 // no extra processes) and drives the daemon through whispy-client.
 //
-//   left click    open whispy's settings (stops dictation while recording)
-//   right click   toggle dictation
-//   middle click  cancel the current recording
+//   any click     open whispy's settings TUI (never starts or stops dictation;
+//                 that stays on the keybinds). The icon only shows the state.
 //
 // Settings (Omarchy's widget settings, or the widget's shell.json entry):
 //   "hideWhenIdle": true   only show while recording/transcribing/flashing
@@ -79,11 +78,11 @@ Item {
 
     readonly property string tooltip: {
         switch (dictationState) {
-        case "recording":    return "whispy: listening \u00b7 click to stop, middle-click to cancel"
-        case "transcribing": return "whispy: transcribing"
-        case "success":      return "whispy: done"
-        case "error":        return "whispy: " + (errorMessage || "error")
-        default:             return "whispy: ready \u00b7 click for settings, right-click to dictate"
+        case "recording":    return "whispy: listening \u00b7 click for settings"
+        case "transcribing": return "whispy: transcribing \u00b7 click for settings"
+        case "success":      return "whispy: done \u00b7 click for settings"
+        case "error":        return "whispy: " + (errorMessage || "error") + " \u00b7 click for settings"
+        default:             return "whispy: ready \u00b7 click for settings"
         }
     }
 
@@ -98,11 +97,9 @@ Item {
         + 'omarchy-launch-or-focus whispy-settings '
         + '"omarchy-launch-tui --app-id=TUI.float whispy-daemon settings"'
 
-    // The command a click with `button` runs in the current state.
+    // The command a click runs: always the settings, whatever the button or state.
+    // Dictation is driven only by the keybinds, so a stray click never records.
     function commandFor(button) {
-        if (button === Qt.MiddleButton) return pathFix + "whispy-client cancel"
-        if (button === Qt.RightButton) return pathFix + "whispy-client toggle"
-        if (dictationState === "recording") return pathFix + "whispy-client toggle"
         return settingsCommand
     }
 
@@ -203,6 +200,7 @@ Item {
 
     MouseArea {
         anchors.fill: parent
+        // Left clicks reach triggerPress through the bar's click-target contract.
         acceptedButtons: Qt.RightButton | Qt.MiddleButton
         onClicked: function(mouse) { root.triggerPress(mouse.button) }
     }

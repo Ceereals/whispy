@@ -52,28 +52,28 @@ Item {
             verify(typeof mod.triggerPress === "function")
         }
 
-        function test_clicks_drive_the_client() {
-            mod.apply(stateJson("idle"))
-            host.ran = []
-            mod.triggerPress(Qt.LeftButton)
-            mod.triggerPress(Qt.RightButton)
-            mod.triggerPress(Qt.MiddleButton)
-            compare(host.ran.length, 3)
-            verify(host.ran[0].indexOf("whispy-daemon settings") >= 0, host.ran[0])
-            verify(host.ran[0].indexOf("omarchy-launch-or-focus whispy-settings") >= 0, host.ran[0])
-            verify(/whispy-client toggle$/.test(host.ran[1]), host.ran[1])
-            verify(/whispy-client cancel$/.test(host.ran[2]), host.ran[2])
-        }
-
-        function test_left_click_stops_a_recording() {
-            mod.apply(stateJson("recording"))
-            verify(/whispy-client toggle$/.test(mod.commandFor(Qt.LeftButton)))
+        function test_every_click_opens_the_settings() {
+            var states = ["idle", "recording", "transcribing"]
+            for (var i = 0; i < states.length; i++) {
+                mod.apply(stateJson(states[i]))
+                host.ran = []
+                mod.triggerPress(Qt.LeftButton)
+                mod.triggerPress(Qt.RightButton)
+                mod.triggerPress(Qt.MiddleButton)
+                compare(host.ran.length, 3)
+                for (var j = 0; j < host.ran.length; j++) {
+                    verify(host.ran[j].indexOf("omarchy-launch-or-focus whispy-settings") >= 0, host.ran[j])
+                    verify(host.ran[j].indexOf("whispy-daemon settings") >= 0, host.ran[j])
+                    // A click never starts, stops, or cancels dictation.
+                    verify(host.ran[j].indexOf("whispy-client") < 0, host.ran[j])
+                }
+            }
             mod.apply(stateJson("idle"))
         }
 
         function test_commands_find_cargo_installs() {
             // The bar's shell may lack ~/.cargo/bin; it is appended, never prepended.
-            verify(mod.commandFor(Qt.RightButton).indexOf('PATH="$PATH:$HOME/.cargo/bin"') >= 0)
+            verify(mod.commandFor(Qt.LeftButton).indexOf('PATH="$PATH:$HOME/.cargo/bin"') >= 0)
         }
 
         function test_states_map_to_glyph_and_color() {
@@ -88,7 +88,7 @@ Item {
 
             mod.apply(stateJson("error", 0, "model not loaded"))
             compare(mod.glyph.codePointAt(0), 0xF036D)
-            compare(mod.tooltip, "whispy: model not loaded")
+            compare(mod.tooltip, "whispy: model not loaded · click for settings")
         }
 
         function test_long_transcription_is_not_stale() {

@@ -157,10 +157,10 @@ both:
   Omarchy's dictation icon was, right after `omarchy.indicators` in the center.
   Re-run just this step with `whispy-daemon setup omarchy`.
   It follows `state.json` live: a mic, pulsing red while recording, an hourglass
-  while transcribing, a check or mic-off when done. Click opens the settings TUI
-  (`whispy-daemon settings`, floating; a second click focuses it) or, while
-  recording, stops; right click toggles dictation; middle click cancels. Manage
-  it like any Omarchy widget:
+  while transcribing, a check or mic-off when done. Any click opens the settings TUI
+  (`whispy-daemon settings`, floating; a second click focuses it). It never
+  starts or stops dictation, which stays on the keybinds. Manage it like any
+  Omarchy widget:
 
   ```sh
   omarchy bar move whispy.dictation --section left   # or center / right
