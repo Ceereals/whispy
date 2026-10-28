@@ -16,8 +16,9 @@
 
 </div>
 
-Local, fast, Wayland-native dictation: a resident daemon keeps a
-[whisper.cpp](https://github.com/ggerganov/whisper.cpp) model in RAM, a thin client is fired
+Local, fast, Wayland-native dictation: a resident daemon keeps a speech model in RAM —
+NVIDIA Parakeet via [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) by
+default, or [whisper.cpp](https://github.com/ggerganov/whisper.cpp) — a thin client is fired
 from your Hyprland binds, and a [Quickshell](https://quickshell.org) pill shows live state.
 Speech never leaves your machine. Hyprland — including [Omarchy](https://omarchy.org) 4 — gets
 the full experience (pill overlay); dictation
@@ -28,7 +29,7 @@ also runs on **X11/Xorg and generic Wayland** (GNOME, KDE, Sway, XFCE, i3) — s
 
 ```sh
 paru -S whispy            # install (Arch/CachyOS; `yay -S whispy` on Omarchy)
-whispy-daemon setup       # build whisper.cpp, fetch model, enable service
+whispy-daemon setup       # speech engine + model, ydotool, services
 ```
 
 Then add the keybinds `setup` prints — it detects Omarchy and Hyprland's Lua vs
@@ -61,7 +62,7 @@ Hold **F9**, speak, release — the text is typed into your focused field (or ta
 
 **Any distro (script)** — one command, nothing to do after. On Arch it routes to the AUR
 package; elsewhere it builds from source into `~/.local/bin`. Either way it then runs
-`whispy-daemon setup` for you (whisper.cpp build, model download, ydotool + services):
+`whispy-daemon setup` for you (speech engine, model download, ydotool + services):
 
 ```sh
 ./install.sh                         # add WHISPY_NO_SETUP=1 to install binaries only
@@ -77,16 +78,18 @@ whispy-daemon setup       # finish the one-time bootstrap
 **From source:**
 
 ```sh
-cargo build --release --locked
-install -Dm755 target/release/whispy-{daemon,client} -t ~/.local/bin
+cargo build --release --locked --workspace --exclude whispy-stt
+cargo build --release --locked -p whispy-stt --features vulkan   # drop --features for CPU-only
+install -Dm755 target/release/whispy-{daemon,client,stt} -t ~/.local/bin
 whispy-daemon setup
 ```
 
 ## Setup
 
-`whispy-daemon setup` is the one-time bootstrap (idempotent — safe to re-run). It **builds
-whisper.cpp** (Vulkan or CPU, per `stt.backend` — auto-detected by default), **downloads the
-model**, grants ydotool uinput access, seeds
+`whispy-daemon setup` is the one-time bootstrap (idempotent — safe to re-run). It **installs the
+speech engine** — `whispy-stt` for Parakeet (shipped by the AUR package, else built with cargo)
+or whisper.cpp for the whisper engine, Vulkan or CPU per `stt.backend`, auto-detected by
+default — **downloads its model** (checksum-verified), grants ydotool uinput access, seeds
 `~/.config/whispy`, enables the `whispy-daemon` **and** `ydotoold` user services, and — if
 Quickshell is present — runs the pill as its own `whispy-pill` service (no `shell.qml` edit),
 then **verifies** the running system:
@@ -99,7 +102,7 @@ whispy-daemon setup                 # --quickshell forces the pill; --no-pill in
 Run any step on its own with:
 
 ```sh
-whispy-daemon setup doctor|whisper|model|ydotool|systemd|quickshell|omarchy|verify|keybinds
+whispy-daemon setup doctor|stt|whisper|model|ydotool|systemd|quickshell|omarchy|verify|keybinds
 ```
 
 The only manual step left is the keybinds — `setup` prints them at the end, in the syntax of
@@ -107,21 +110,23 @@ the config it finds (Omarchy 4 `bindings.lua`, Hyprland Lua, or `hyprland.conf`)
 with `whispy-daemon setup keybinds` (see
 [`docs/hyprland-setup.md`](docs/hyprland-setup.md); X11/GNOME equivalents under
 [Non-Hyprland](#non-hyprland-x11-and-generic-wayland)). Re-run `whispy-daemon setup verify` any
-time to check that the model, daemon, `ydotoold`, and whisper-server are all up.
+time to check that the model, daemon, `ydotoold`, and the STT server are all up.
 
 ## How it works
 
 ```
-Hyprland keybind ──► whispy-client ──(unix socket)──► whispy-daemon ──► whisper-server (Vulkan/CPU)
+Hyprland keybind ──► whispy-client ──(unix socket)──► whispy-daemon ──► STT server (Vulkan/CPU)
                                                           │
                                                           ├─► state.json ──► Quickshell pill
                                                           └─► inject ──► focused app
 ```
 
-- **whispy-daemon** — resident service: supervises a `whisper-server` child (model stays
+- **whispy-daemon** — resident service: supervises the STT server child (model stays
   in RAM), captures audio (PipeWire), filters hallucinations, injects text, publishes state.
 - **whispy-client** — tiny binary called from Hyprland binds (`start` / `stop` / `cancel` / `toggle`).
-- **whisper-server** — whisper.cpp built with the backend `stt.backend` picks: Vulkan (developed on AMD RDNA4, no ROCm) or CPU (OpenBLAS-accelerated when available).
+- **STT server** — `whispy-stt` (Parakeet on transcribe.cpp, the default) or whisper.cpp's
+  `whisper-server`, per `stt.engine`. Both speak the same `/inference` API; Vulkan (developed
+  on AMD RDNA4, no ROCm) or CPU per `stt.backend`. A crashed server is restarted by the daemon.
 - **pill UI** — Quickshell layer overlay reading the state file ([`ui/quickshell/`](ui/quickshell/)).
 - **Omarchy bar widget** — the same live state as an Omarchy 4 bar widget plugin ([`ui/omarchy/`](ui/omarchy/));
   `setup` installs it and puts it on the bar, see the [Omarchy notes](docs/hyprland-setup.md#omarchy).
@@ -141,6 +146,23 @@ State & IPC paths (everything is namespaced `whispy`):
   `transcripts.jsonl` (every clip's text, for `whispy-daemon stats`); each is capped
   (10 MB, or 5 MB for transcripts) and keeps one rotated `.1` generation
 
+## Speech engines
+
+`stt.engine` picks the model (switch it in `whispy-daemon settings` → Engine, then run
+`whispy-daemon setup` if that engine isn't installed yet):
+
+| | `parakeet` *(default)* | `whisper` |
+|---|---|---|
+| Model | parakeet-ultra Q8_0 (740 MB) via `whispy-stt` | large-v3-turbo q5_0 via `whisper-server` |
+| 5 s clip, RX 9070 XT | ~33 ms | ~200 ms |
+| Silence | empty (nothing typed) | hallucinates "Thank you." (dropped by the filter) |
+| Languages | 25 European, detected per clip | ~100 |
+| Custom vocabulary | fuzzy-corrected after transcription | decoding prompt |
+
+Measured on one speaker's Italian/English/mixed dictation: word error rate was the same, with
+better punctuation and no language mix-ups on Parakeet. `dictionary.vocabulary` fixes names
+either engine mishears (e.g. `["Hyprland", "Omarchy"]`).
+
 ## Configuration
 
 The everyday settings have a screen: **`whispy-daemon settings`** picks the microphone (with a
@@ -154,8 +176,8 @@ omarchy-launch-tui --app-id=TUI.float whispy-daemon settings
 ```
 
 Defaults are baked into the daemon (see [`config/default.toml`](config/default.toml)). Override
-any of them by copying the file to `$XDG_CONFIG_HOME/whispy/config.toml`. Common knobs: the
-model and `whisper-server` paths (`[stt]`), the per-request `stt.timeout_secs`, the hallucination
+any of them by copying the file to `$XDG_CONFIG_HOME/whispy/config.toml`. Common knobs:
+`stt.engine` and the model/server paths (`[stt]`), the per-request `stt.timeout_secs`, the hallucination
 filter thresholds (`[filter]`), and `injection.mode` to switch between paste and type.
 
 To tune the filter, run **`whispy-daemon stats`** — it summarizes the transcript log
@@ -170,7 +192,8 @@ reason, so you can see whether `fuzzy_ratio` / confidence bounds are too aggress
 - For the Vulkan backend: a Vulkan-capable GPU (developed on RX 9070 XT / RDNA4) + `vulkan-icd-loader`,
   and to build it: `glslc` (Arch: `shaderc`), `vulkan-headers`, `spirv-headers`. Not needed for the CPU backend.
   The AUR package pulls all of these in; `setup` names any that are missing before it starts the build.
-- Build tools for `setup whisper`: `git`, `cmake`, a C/C++ compiler
+- Build tools: `cargo`, `cmake` and a C++ compiler for `whispy-stt` (`setup stt`, unless the package ships it);
+  `git`, `cmake` and a C/C++ compiler for `setup whisper`
 - Optional: `openblas` for ~3-4× faster CPU inference; [Quickshell](https://quickshell.org) (Qt 6.5+) for the pill overlay (Wayland layer-shell only)
 
 Run `whispy-daemon setup doctor` to see exactly which tools your session needs — it detects
@@ -208,6 +231,7 @@ Dictation runs everywhere; only the on-screen pill is Hyprland/layer-shell speci
 crates/common   shared protocol + state types (serde)
 crates/daemon   the daemon (audio, stt, filter, inject, state, server, whisper)
 crates/client   the thin client
+crates/stt      whispy-stt: Parakeet STT server on transcribe.cpp (whisper-server compatible)
 config/         default.toml, hallucinations.toml
 systemd/        whispy-daemon.service (user unit)
 scripts/        benchmark.sh, setup-ydotool.sh
