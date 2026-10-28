@@ -143,6 +143,16 @@ State & IPC paths (everything is namespaced `whispy`):
 
 ## Configuration
 
+The everyday settings have a screen: **`whispy-daemon settings`** picks the microphone (with a
+live level meter and a test dictation, `t`), the language, paste vs type, and the silence
+auto-stop, and shows the latest transcripts with why any were dropped. It edits your
+`config.toml` in place (comments kept) and restarts the daemon on save. On Omarchy, open it
+floating like Omarchy's own TUIs:
+
+```sh
+omarchy-launch-tui --app-id=TUI.float whispy-daemon settings
+```
+
 Defaults are baked into the daemon (see [`config/default.toml`](config/default.toml)). Override
 any of them by copying the file to `$XDG_CONFIG_HOME/whispy/config.toml`. Common knobs: the
 model and `whisper-server` paths (`[stt]`), the per-request `stt.timeout_secs`, the hallucination

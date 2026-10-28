@@ -23,6 +23,9 @@ clap = { version = "4", features = ["derive"] }
 toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+# Settings TUI (`whispy-daemon settings`): terminal UI + comment-preserving config edits.
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache"] }
+toml_edit = "0.25"
 
 # Lints shared by every crate (each opts in with `[lints] workspace = true`).
 # `cargo clippy` picks these up automatically; CI runs it with `-D warnings`, so

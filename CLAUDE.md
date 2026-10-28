@@ -79,6 +79,7 @@ Cargo workspace (`resolver = "3"`, `edition = "2024"`, MSRV `rust-version = 1.88
 | `config.rs` | TOML config; built-in defaults embedded via `include_str!`; `Config::validate` rejects bad config at startup. |
 | `setup.rs` | `whispy-daemon setup` — idempotent one-shot bootstrap (build whisper.cpp, fetch model, ydotool perms, seed config, install systemd unit, opt-in Quickshell), then prints keybinds for the detected config (`HyprConfig`: Omarchy 4 Lua / Omarchy 3 / Hyprland Lua / hyprlang). |
 | `stats.rs` | `whispy-daemon stats` — read-only summary of `transcripts.jsonl` (accepted vs dropped by reason) for filter tuning. |
+| `settings/` | `whispy-daemon settings` — ratatui settings TUI (microphone + level meter + test dictation, language, typing, auto-stop, history). `form.rs` is the pure, tested screen state; `store.rs` edits `config.toml` with `toml_edit` so comments survive; `mic.rs` reuses `audio::Recorder` so the meter/test hear what dictation hears. Terminal palette colors only, so it follows the Omarchy theme. |
 
 ## IPC protocol
 

@@ -14,6 +14,7 @@ mod llm;
 mod pipeline;
 mod proc;
 mod server;
+mod settings;
 mod setup;
 mod state;
 mod stats;
@@ -66,6 +67,8 @@ enum Command {
     Setup(setup::SetupArgs),
     /// Summarize the transcript log (accepted vs dropped) to help tune the filter.
     Stats,
+    /// Open the settings screen (microphone, language, typing, auto-stop, history).
+    Settings,
 }
 
 fn main() -> ExitCode {
@@ -84,6 +87,7 @@ fn main() -> ExitCode {
     match args.command {
         Some(Command::Setup(setup_args)) => return setup::run(&cfg, setup_args),
         Some(Command::Stats) => return stats::run(),
+        Some(Command::Settings) => return settings::run(&cfg, args.config.as_deref()),
         None => {}
     }
 
