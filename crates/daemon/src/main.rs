@@ -113,6 +113,10 @@ fn main() -> ExitCode {
 fn run(cfg: Config) -> std::io::Result<()> {
     info!(model = %cfg.stt.model, "starting whispy-daemon");
 
+    // Bail before touching whisper-server if a daemon is already live: a second
+    // instance would otherwise reuse its server, steal its socket, and delete it on exit.
+    server::ensure_not_running(&cfg.ipc.socket_path())?;
+
     // Decide which display server we're driving (Wayland vs X11) before touching
     // any injection tool. `auto` reads the session env; an explicit override forces
     // it. If nothing is detectable, default to Wayland (the historical behavior).
