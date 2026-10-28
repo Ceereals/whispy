@@ -702,7 +702,129 @@ fn install_omarchy_widget() -> Result<(), String> {
     } else {
         println!("  could not add it now — from your Omarchy session run: omarchy bar put {id}");
     }
+    hide_omarchy_dictation_indicator();
+    if have("voxtype") {
+        println!(
+            "  Voxtype is still installed and keeps its own model loaded; stop it with\n    \
+             systemctl --user disable --now voxtype   (or remove it: omarchy-voxtype-remove)"
+        );
+    }
     Ok(())
+}
+
+/// Omarchy's `omarchy.indicators` bar widget ships a "Dictation" indicator wired
+/// to Voxtype (its status, and a click opens Voxtype's config). Next to whispy's
+/// widget it shows a second, wrong dictation state, so on first install drop it
+/// from the widget's `items` in `shell.json`. Best-effort: any failure only warns.
+///
+/// This edits `shell.json` directly because `omarchy bar set … --json` mangles
+/// array values (the shell IPC splits them at commas). Omarchy hot-reloads it.
+fn hide_omarchy_dictation_indicator() {
+    let path = config::expand("~/.config/omarchy/shell.json");
+    let Ok(text) = fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(mut shell) = serde_json::from_str::<serde_json::Value>(&text) else {
+        println!(
+            "  could not parse {}; leaving Omarchy's indicators alone",
+            path.display()
+        );
+        return;
+    };
+    if !without_dictation_indicator(&mut shell, &omarchy_indicator_ids()) {
+        return;
+    }
+    let Ok(out) = serde_json::to_string_pretty(&shell) else {
+        return;
+    };
+    let tmp = path.with_extension("json.whispy-tmp");
+    match fs::write(&tmp, format!("{out}\n")).and_then(|()| fs::rename(&tmp, &path)) {
+        Ok(()) => println!(
+            "  hid Omarchy's Voxtype \"Dictation\" indicator (re-enable it in the indicators widget settings)"
+        ),
+        Err(e) => println!("  could not update {}: {e}", path.display()),
+    }
+}
+
+/// Indicator ids `omarchy.indicators` shows when its `items` setting is empty,
+/// read from Omarchy's widget manifest (falls back to the Omarchy 4.0 list).
+fn omarchy_indicator_ids() -> Vec<String> {
+    let root = std::env::var_os("OMARCHY_PATH")
+        .map_or_else(|| PathBuf::from("/usr/share/omarchy"), PathBuf::from);
+    let manifest = root.join("shell/plugins/bar/widgets/Indicators.manifest.json");
+    let from_manifest = fs::read_to_string(manifest)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .map(|m| indicator_ids_from_manifest(&m))
+        .unwrap_or_default();
+    if from_manifest.is_empty() {
+        [
+            "Dictation",
+            "ScreenRecording",
+            "Reminder",
+            "NightLight",
+            "Dnd",
+            "StayAwake",
+        ]
+        .map(String::from)
+        .to_vec()
+    } else {
+        from_manifest
+    }
+}
+
+/// The `items` option values from the indicators widget manifest's schema.
+fn indicator_ids_from_manifest(manifest: &serde_json::Value) -> Vec<String> {
+    manifest["barWidget"]["schema"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|field| field["key"] == "items")
+        .filter_map(|field| field["options"].as_array())
+        .flatten()
+        .filter_map(|opt| opt["value"].as_str().map(String::from))
+        .collect()
+}
+
+/// Remove "Dictation" from every `omarchy.indicators` widget in `shell`. An empty
+/// or missing `items` means "all indicators", so it becomes `all` minus Dictation.
+/// Returns whether anything changed.
+fn without_dictation_indicator(shell: &mut serde_json::Value, all: &[String]) -> bool {
+    use serde_json::Value;
+    match shell {
+        Value::Object(map) => {
+            let mut changed = false;
+            if map.get("id").and_then(Value::as_str) == Some("omarchy.indicators") {
+                let current: Vec<String> = map
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .filter(|items: &Vec<String>| !items.is_empty())
+                    .unwrap_or_else(|| all.to_vec());
+                if current.iter().any(|i| i == "Dictation") {
+                    let kept: Vec<Value> = current
+                        .into_iter()
+                        .filter(|i| i != "Dictation")
+                        .map(Value::String)
+                        .collect();
+                    map.insert("items".into(), Value::Array(kept));
+                    changed = true;
+                }
+            }
+            for v in map.values_mut() {
+                changed |= without_dictation_indicator(v, all);
+            }
+            changed
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .fold(false, |acc, v| without_dictation_indicator(v, all) | acc),
+        _ => false,
+    }
 }
 
 /// Where Omarchy discovers third-party plugins. Omarchy hardcodes
@@ -1221,6 +1343,65 @@ mod tests {
             assert!(stop.starts_with("bindr"), "{binds}");
             assert!(!binds.contains("hl."), "{binds}");
         }
+    }
+
+    fn all_indicators() -> Vec<String> {
+        ["Dictation", "ScreenRecording", "Dnd"]
+            .map(String::from)
+            .to_vec()
+    }
+
+    #[test]
+    fn empty_indicator_items_become_all_but_dictation() {
+        let mut shell = serde_json::json!({ "bar": { "layout": { "center": [
+            { "id": "omarchy.indicators" },
+            { "id": "omarchy.clock" }
+        ] } } });
+        assert!(without_dictation_indicator(&mut shell, &all_indicators()));
+        assert_eq!(
+            shell["bar"]["layout"]["center"][0]["items"],
+            serde_json::json!(["ScreenRecording", "Dnd"])
+        );
+        assert!(shell["bar"]["layout"]["center"][1].get("items").is_none());
+    }
+
+    #[test]
+    fn explicit_indicator_items_keep_the_users_choice_minus_dictation() {
+        let mut shell = serde_json::json!({ "layout": { "right": [
+            { "id": "omarchy.indicators", "items": ["Dnd", "Dictation"] }
+        ] } });
+        assert!(without_dictation_indicator(&mut shell, &all_indicators()));
+        assert_eq!(
+            shell["layout"]["right"][0]["items"],
+            serde_json::json!(["Dnd"])
+        );
+    }
+
+    #[test]
+    fn no_change_without_a_dictation_indicator() {
+        let mut shell = serde_json::json!({ "layout": { "center": [
+            { "id": "omarchy.indicators", "items": ["Dnd"] }
+        ] } });
+        assert!(!without_dictation_indicator(&mut shell, &all_indicators()));
+        let mut no_widget =
+            serde_json::json!({ "layout": { "center": [{ "id": "omarchy.clock" }] } });
+        assert!(!without_dictation_indicator(
+            &mut no_widget,
+            &all_indicators()
+        ));
+    }
+
+    #[test]
+    fn indicator_ids_come_from_the_manifest_items_options() {
+        let manifest = serde_json::json!({ "barWidget": { "schema": [
+            { "key": "items", "options": [{ "value": "Dictation" }, { "value": "Dnd" }] },
+            { "key": "alwaysShow", "type": "boolean" }
+        ] } });
+        assert_eq!(indicator_ids_from_manifest(&manifest), ["Dictation", "Dnd"]);
+        assert_eq!(
+            indicator_ids_from_manifest(&serde_json::json!({})),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
