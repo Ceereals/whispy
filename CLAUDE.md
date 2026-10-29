@@ -77,7 +77,7 @@ Cargo workspace (`resolver = "3"`, `edition = "2024"`, MSRV `rust-version = 1.88
 | Module | Responsibility |
 |--------|----------------|
 | `main.rs` | CLI args (clap), config load, JSON logging init, signal handling, wires everything, runs the socket server. Also routes the `setup` subcommand. |
-| `app.rs` | `App` — maps socket commands to the capture→transcribe→filter→inject flow; owns the active `Session` (capture + its `AppContext`, handed to the transcribe thread) and an inject lock so overlapping clips paste one at a time. |
+| `app.rs` | `App` — the dictation session: owns the start→record→stop/auto-stop→transcribe→filter→deliver→flash lifecycle as one state machine behind `handle(Cmd) -> Resp`, reaching the outside world only through the `Ports` trait (capture, STT, focused-window probe, deliver = the `TextPipeline` + inject, notify, transcript log, spawn). `LivePorts` (over the `Desktop`, `Recorder`, `SttClient`, `Injector`, `TranscriptLog`) is the production adapter; tests drive the lifecycle through a fake. Deliveries are serialized so overlapping clips paste one at a time. |
 | `server.rs` | Unix-socket server: line-based JSON (`Cmd` in, `Resp` out), polls a shutdown flag for clean SIGTERM exit. |
 | `audio.rs` | PipeWire capture via `pw-record` (raw s16le mono), RMS metering, gain, clip limits, trailing-silence auto-stop, peak normalization. |
 | `engine.rs` | `Engine` (`stt.engine`: `Whisper` \| `Parakeet`, serde-parsed): owns what differs per engine — server name/binary/extra args, model file + download source (URL, SHA-256), `setup` step, and the vocabulary strategy (`Prompt` for whisper, `Correct` via `vocab.rs` for Parakeet). Callers ask the engine instead of branching on it. |

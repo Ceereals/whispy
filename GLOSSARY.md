@@ -7,6 +7,13 @@ class, the clipboard, and typing into the focused window. One adapter per
 display server (Wayland, X11), chosen from `injection.backend` and the session
 environment. See `crates/daemon/src/desktop.rs`.
 
+**Dictation session** — one push-to-talk dictation from `start` to the
+success/error flash: recording, then (after `stop`, trailing-silence auto-stop,
+or the max-duration cap) transcription, the hallucination filter, and delivery
+(post-processing + injection) into the window focused at `start`. Only one
+recording is live at a time, but an earlier clip may still be transcribing.
+`cancel` discards the recording and any clip not yet being injected. See `crates/daemon/src/app.rs`.
+
 **Editable setting** — a config value the settings screen (`whispy-daemon
 settings`) changes: microphone, engine, language, typing mode, auto-stop. Each is
 declared once with its `[table] key`, its options, and how it is read from the
