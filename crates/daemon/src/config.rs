@@ -564,7 +564,7 @@ pub fn state_dir() -> PathBuf {
 /// Size caps for the files the daemon appends to in [`state_dir`]. Each keeps one
 /// rotated generation (`<name>.1`), so disk use stays under twice the cap.
 pub const DAEMON_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
-pub const WHISPER_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
+pub const STT_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
 pub const TRANSCRIPTS_MAX_BYTES: u64 = 5 * 1024 * 1024;
 
 /// The previous generation of a rotated file: `<path>.1`.

@@ -59,7 +59,7 @@ impl SttSupervisor {
         std::fs::create_dir_all(state_dir)?;
         // Rotate only here, at daemon start: in-process restarts append, so the
         // output of a crash survives the monitor respawning the server.
-        if let Err(e) = config::rotate_if_larger(&log_path, config::WHISPER_LOG_MAX_BYTES) {
+        if let Err(e) = config::rotate_if_larger(&log_path, config::STT_LOG_MAX_BYTES) {
             warn!(error = %e, log = %log_path.display(), "could not rotate the {name} log");
         }
 

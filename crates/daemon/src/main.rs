@@ -253,7 +253,7 @@ fn ensure_wayland_display() {
     let names = entries.filter_map(|e| e.ok()?.file_name().into_string().ok());
     if let Some(socket) = pick_wayland_socket(names) {
         // SAFETY: this runs early in startup. The only other live thread is the
-        // log-appender worker, which never reads the environment; the whisper
+        // log-appender worker, which never reads the environment; the STT supervisor
         // monitor, state-flash threads, and socket server are all spawned later,
         // so nothing races this write.
         unsafe { std::env::set_var("WAYLAND_DISPLAY", &socket) };
