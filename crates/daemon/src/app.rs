@@ -14,7 +14,9 @@
 //! Only one capture is live at a time (the `Recording` slot); the clips it hands
 //! off transcribe on their own threads, so a new recording may start while an
 //! older clip is still in flight. Deliveries are serialized so overlapping clips
-//! paste one at a time, in order.
+//! paste one at a time, in order. Such an older clip still delivers, but never
+//! flashes its outcome over the newer recording. `cancel` discards the recording
+//! and every clip that has not started injecting: they paste and publish nothing.
 //!
 //! The session reaches the outside world only through [`Ports`]: the microphone,
 //! the STT server, the focused-window probe, delivery (post-processing +
@@ -80,20 +82,46 @@ pub trait Ports: Send + Sync {
 /// focused when capture began). Kept together so a later recording can never
 /// swap the context out from under a clip that is still transcribing.
 struct Recording {
+    /// Identifies this recording and the clip it becomes (see [`Lifecycle`]).
+    id: u64,
     capture: Box<dyn Capture>,
     ctx: AppContext,
 }
 
 /// A finished recording on its way to transcription and delivery.
 struct Clip {
+    id: u64,
     samples: Vec<i16>,
     ctx: AppContext,
+}
+
+/// The session's mutable state, under one lock.
+#[derive(Default)]
+struct Lifecycle {
+    /// The live (or overrun) recording, if any.
+    recording: Option<Recording>,
+    /// The id the next recording gets. Ids only grow, so a larger id is newer.
+    next_id: u64,
+    /// Clips of recordings with a smaller id were cancelled: they neither
+    /// deliver nor publish anything.
+    cancelled_below: u64,
+}
+
+impl Lifecycle {
+    /// Whether a recording is capturing right now (live, not overrun).
+    fn is_recording(&self) -> bool {
+        self.recording
+            .as_ref()
+            .is_some_and(|r| !r.capture.auto_stopped())
+    }
 }
 
 /// How one clip ended.
 enum Outcome {
     /// Injected into the focused window.
     Delivered,
+    /// Cancelled before delivery: discarded without a trace.
+    Cancelled,
     /// Transcription, the filter or injection failed; `notify` names the
     /// desktop notification to raise, if the failure warrants one.
     Failed {
@@ -109,8 +137,7 @@ pub struct App {
     status: Status,
     blacklist: Hallucinations,
     ports: Box<dyn Ports>,
-    /// The live (or overrun) recording, if any.
-    recording: Mutex<Option<Recording>>,
+    lifecycle: Mutex<Lifecycle>,
     /// Serializes delivery across clip threads: a new clip can finish while the
     /// previous one is still pasting, and two pastes interleaving their clipboard
     /// save/restore would lose the user's clipboard.
@@ -150,7 +177,7 @@ impl App {
             status,
             blacklist,
             ports,
-            recording: Mutex::new(None),
+            lifecycle: Mutex::new(Lifecycle::default()),
             inject_lock: Mutex::new(()),
         }
     }
@@ -167,17 +194,19 @@ impl App {
     }
 
     fn start(self: &Arc<Self>, workflow: Option<String>) -> Resp {
-        let mut slot = self.recording.lock().expect("recording lock");
+        let mut lifecycle = self.lifecycle.lock().expect("lifecycle lock");
         // An overrun recording (too_long, already reported) that no stop/cancel
         // reclaimed: tear it down and start fresh.
-        if let Some(stale) = slot.take_if(|r| r.capture.auto_stopped()) {
+        if let Some(stale) = lifecycle.recording.take_if(|r| r.capture.auto_stopped()) {
             stale.capture.cancel();
         }
-        if slot.is_some() {
+        if lifecycle.recording.is_some() {
             return Resp::err("already recording");
         }
 
-        match self.ports.start_capture(self.capture_events()) {
+        let id = lifecycle.next_id;
+        lifecycle.next_id += 1;
+        match self.ports.start_capture(self.capture_events(id)) {
             Ok(capture) => {
                 self.status.recording(0.0);
                 // Snapshot the workflow + focused window now: this is the target
@@ -186,7 +215,7 @@ impl App {
                     workflow,
                     window_class: self.ports.focused_window(),
                 };
-                *slot = Some(Recording { capture, ctx });
+                lifecycle.recording = Some(Recording { id, capture, ctx });
                 info!("recording started");
                 Resp::ok()
             }
@@ -194,11 +223,11 @@ impl App {
         }
     }
 
-    /// The callbacks for a new capture: meter, max-duration overrun, auto-stop.
-    fn capture_events(self: &Arc<Self>) -> CaptureEvents {
+    /// The callbacks for recording `id`: meter, max-duration overrun, auto-stop.
+    fn capture_events(self: &Arc<Self>, id: u64) -> CaptureEvents {
         let rms_status = self.status.clone();
         let too_long = Arc::clone(self);
-        // The capture fires `on_silence` from its reader thread, and finishing
+        // The capture fires `silence` from its reader thread, and finishing
         // joins that very thread: finish on a fresh thread to avoid a self-join.
         let silence = Arc::clone(self);
         CaptureEvents {
@@ -214,13 +243,13 @@ impl App {
             silence: Box::new(move || {
                 info!("auto-stop on trailing silence");
                 let app = Arc::clone(&silence);
-                silence.ports.spawn(Box::new(move || app.auto_finish()));
+                silence.ports.spawn(Box::new(move || app.auto_finish(id)));
             }),
         }
     }
 
     fn stop(self: &Arc<Self>) -> Resp {
-        let Some(recording) = self.take_recording() else {
+        let Some(recording) = self.take_recording(|_| true) else {
             return Resp::err("not recording");
         };
         if let Some(clip) = self.close(recording) {
@@ -231,57 +260,101 @@ impl App {
         Resp::ok()
     }
 
-    /// Finish a recording that auto-stopped on trailing silence, exactly as an
-    /// explicit `stop` would. Runs on its own thread; a no-op if a stop or cancel
-    /// already reclaimed the recording.
-    fn auto_finish(&self) {
-        if let Some(clip) = self.take_recording().and_then(|r| self.close(r)) {
+    /// Finish recording `id`, which auto-stopped on trailing silence, exactly as
+    /// an explicit `stop` would. Runs on its own thread; a no-op if a stop or
+    /// cancel already reclaimed that recording (even if a newer one is live).
+    fn auto_finish(&self, id: u64) {
+        if let Some(clip) = self
+            .take_recording(|r| r.id == id)
+            .and_then(|r| self.close(r))
+        {
             self.process(clip);
         }
     }
 
+    /// Discard the recording and every clip still in flight that has not
+    /// started injecting.
     fn cancel(&self) -> Resp {
-        if let Some(recording) = self.take_recording() {
+        let recording = {
+            let mut lifecycle = self.lifecycle.lock().expect("lifecycle lock");
+            lifecycle.cancelled_below = lifecycle.next_id;
+            lifecycle.recording.take()
+        };
+        if let Some(recording) = recording {
             recording.capture.cancel();
         }
         self.status.idle();
         Resp::ok()
     }
 
-    /// Take the recording out of the slot, releasing the lock before the capture
-    /// is joined.
-    fn take_recording(&self) -> Option<Recording> {
-        self.recording.lock().expect("recording lock").take()
+    /// Take the recording out of its slot if `which` matches it, releasing the
+    /// lock before the capture is joined.
+    fn take_recording(&self, which: impl FnOnce(&mut Recording) -> bool) -> Option<Recording> {
+        let mut lifecycle = self.lifecycle.lock().expect("lifecycle lock");
+        lifecycle.recording.take_if(which)
+    }
+
+    /// Whether clip `id` was cancelled.
+    fn cancelled(&self, id: u64) -> bool {
+        id < self
+            .lifecycle
+            .lock()
+            .expect("lifecycle lock")
+            .cancelled_below
+    }
+
+    /// Publish a state on behalf of clip `id`, unless a newer recording is
+    /// capturing: the clip still runs its course, but the UI keeps showing the
+    /// recording. Returns false, publishing nothing, if the clip was cancelled.
+    ///
+    /// Publishes under the lifecycle lock, which `start` holds while it
+    /// publishes `recording`, so a clip can never land after a newer start.
+    fn report(&self, id: u64, publish: impl FnOnce(&Status)) -> bool {
+        let lifecycle = self.lifecycle.lock().expect("lifecycle lock");
+        if id < lifecycle.cancelled_below {
+            return false;
+        }
+        if !lifecycle.is_recording() {
+            publish(&self.status);
+        }
+        true
     }
 
     /// Stop a recording and hand off its clip. An overrun capture is discarded
     /// (`too_long` was already reported) and a too-short or speechless clip goes
     /// back to idle silently; neither yields a clip.
     fn close(&self, recording: Recording) -> Option<Clip> {
-        let Recording { capture, ctx } = recording;
+        let Recording { id, capture, ctx } = recording;
         if capture.auto_stopped() {
             capture.cancel();
             return None;
         }
         let Some(samples) = capture.finish(self.cfg.audio.min_samples()) else {
-            self.status.idle();
+            self.report(id, Status::idle);
             return None;
         };
-        self.status.transcribing();
-        Some(Clip { samples, ctx })
+        self.report(id, Status::transcribing)
+            .then_some(Clip { id, samples, ctx })
     }
 
     /// Transcribe, filter and deliver one clip, then publish how it ended.
+    /// A cancelled clip publishes nothing, and a clip that ends while a newer
+    /// recording is capturing delivers without flashing over it.
     fn process(&self, clip: Clip) {
+        let id = clip.id;
         match self.outcome(clip) {
-            Outcome::Delivered => self.status.success(),
+            Outcome::Cancelled => info!("clip cancelled; discarded"),
+            Outcome::Delivered => {
+                self.report(id, Status::success);
+            }
             Outcome::Failed {
                 kind,
                 message,
                 notify,
             } => {
-                self.status.error(kind, &message);
-                if let Some(summary) = notify {
+                if self.report(id, |s| s.error(kind, &message))
+                    && let Some(summary) = notify
+                {
                     self.ports.notify(summary, &message);
                 }
             }
@@ -321,7 +394,7 @@ impl App {
         match decision {
             Decision::Accept(text) => {
                 info!(lang = ?transcription.language, "transcript accepted");
-                self.deliver(text, &clip.ctx)
+                self.deliver(text, &clip)
             }
             Decision::Drop(reason) => {
                 info!(reason = reason.kind(), "transcript dropped");
@@ -334,10 +407,14 @@ impl App {
         }
     }
 
-    /// Deliver an accepted transcript, one clip at a time.
-    fn deliver(&self, text: String, ctx: &AppContext) -> Outcome {
+    /// Deliver an accepted transcript, one clip at a time. A clip cancelled
+    /// before its turn is discarded instead.
+    fn deliver(&self, text: String, clip: &Clip) -> Outcome {
         let _inject = self.inject_lock.lock().expect("inject lock");
-        match self.ports.deliver(text, ctx) {
+        if self.cancelled(clip.id) {
+            return Outcome::Cancelled;
+        }
+        match self.ports.deliver(text, &clip.ctx) {
             Ok(()) => Outcome::Delivered,
             Err(e) => {
                 warn!(error = %e, "injection failed");
@@ -484,6 +561,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::mpsc::{self, Receiver, Sender};
     use std::thread::JoinHandle;
 
     use whispy_common::{State, StateSnapshot};
@@ -548,6 +626,8 @@ mod tests {
         clip_samples: Mutex<Option<usize>>,
         captures: Mutex<Vec<Arc<FakeCapture>>>,
         transcripts: Mutex<VecDeque<Result<Transcription, SttError>>>,
+        /// When set, the next transcription blocks until the test sends.
+        stt_gate: Mutex<Option<Receiver<()>>>,
         transcribed: AtomicUsize,
         inject_error: Mutex<Option<InjectError>>,
         delivered: Mutex<Vec<(String, Option<String>)>>,
@@ -563,6 +643,13 @@ mod tests {
 
         fn script(&self, reply: Result<Transcription, SttError>) {
             self.transcripts.lock().unwrap().push_back(reply);
+        }
+
+        /// Make the next transcription wait for the returned sender.
+        fn hold_stt(&self) -> Sender<()> {
+            let (tx, rx) = mpsc::channel();
+            *self.stt_gate.lock().unwrap() = Some(rx);
+            tx
         }
 
         /// Join every thread the session spawned (and any they spawned).
@@ -603,6 +690,10 @@ mod tests {
         }
 
         fn transcribe(&self, _samples: &[i16]) -> Result<Transcription, SttError> {
+            let gate = self.stt_gate.lock().unwrap().take();
+            if let Some(gate) = gate {
+                gate.recv().expect("test releases the transcription");
+            }
             self.transcribed.fetch_add(1, Ordering::Relaxed);
             let scripted = self.transcripts.lock().unwrap().pop_front();
             scripted.unwrap_or_else(|| Ok(said("hello world")))
@@ -876,6 +967,108 @@ mod tests {
         assert_eq!(h.fake.capture(0).cancelled.load(Ordering::Relaxed), 1);
         assert_eq!(h.fake.transcribed.load(Ordering::Relaxed), 0);
         assert_eq!(h.state().state, State::Idle);
+    }
+
+    #[test]
+    fn cancel_discards_a_clip_that_is_still_transcribing() {
+        // Regression: cancel published idle, but the in-flight clip still
+        // pasted and flashed success.
+        let h = Harness::new("cancel-in-flight");
+        let release = h.fake.hold_stt();
+        h.start();
+        h.stop();
+        assert_eq!(h.state().state, State::Transcribing);
+
+        assert_ok(&h.send(Cmd::Cancel));
+        release.send(()).unwrap();
+        h.fake.settle();
+
+        assert!(
+            h.fake.delivered().is_empty(),
+            "a cancelled clip must not paste"
+        );
+        assert_eq!(h.state().state, State::Idle);
+        assert!(h.fake.notified().is_empty(), "nothing expected");
+    }
+
+    #[test]
+    fn cancel_also_silences_a_failing_clip() {
+        let h = Harness::new("cancel-failing");
+        let release = h.fake.hold_stt();
+        h.fake.script(Err(SttError::Http("timed out".to_string())));
+        h.start();
+        h.stop();
+        assert_ok(&h.send(Cmd::Cancel));
+        release.send(()).unwrap();
+        h.fake.settle();
+
+        assert_eq!(h.state().state, State::Idle);
+        assert!(h.fake.notified().is_empty(), "nothing expected");
+    }
+
+    #[test]
+    fn a_clip_started_after_a_cancel_still_delivers() {
+        let h = Harness::new("cancel-then-dictate");
+        h.start();
+        assert_ok(&h.send(Cmd::Cancel));
+        h.start();
+        h.stop();
+        h.fake.settle();
+
+        assert_eq!(h.fake.delivered(), ["hello world"]);
+        assert_eq!(h.state().state, State::Success);
+    }
+
+    #[test]
+    fn an_older_clip_delivers_without_overwriting_a_newer_recording() {
+        // Regression: the older clip's success flash replaced `Recording`.
+        let h = Harness::new("stale-flash");
+        let release = h.fake.hold_stt();
+        h.start();
+        h.stop();
+        h.start(); // a new recording while the first clip transcribes
+        release.send(()).unwrap();
+        h.fake.settle();
+
+        assert_eq!(
+            h.fake.delivered(),
+            ["hello world"],
+            "the older clip still pastes"
+        );
+        assert_eq!(h.state().state, State::Recording);
+    }
+
+    #[test]
+    fn an_older_clip_failure_does_not_overwrite_a_newer_recording() {
+        let h = Harness::new("stale-error");
+        let release = h.fake.hold_stt();
+        h.fake.script(Ok(said("Thank you.")));
+        h.start();
+        h.stop();
+        h.start();
+        release.send(()).unwrap();
+        h.fake.settle();
+
+        assert_eq!(h.state().state, State::Recording);
+    }
+
+    #[test]
+    fn a_late_auto_stop_leaves_the_next_recording_alone() {
+        // Regression: the auto-stop thread of a recording that an explicit stop
+        // already finished took whatever recording was live when it ran.
+        let h = Harness::new("late-silence");
+        h.start();
+        h.stop();
+        h.fake.settle();
+        h.start();
+        h.fake.capture(0).silence(); // the first capture's auto-stop, running late
+        h.fake.settle();
+
+        assert_eq!(h.fake.capture(1).closes(), 0);
+        assert_eq!(h.state().state, State::Recording);
+        h.stop();
+        h.fake.settle();
+        assert_eq!(h.fake.delivered(), ["hello world", "hello world"]);
     }
 
     #[test]

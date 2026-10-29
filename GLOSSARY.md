@@ -7,7 +7,7 @@ success/error flash: recording, then (after `stop`, trailing-silence auto-stop,
 or the max-duration cap) transcription, the hallucination filter, and delivery
 (post-processing + injection) into the window focused at `start`. Only one
 recording is live at a time, but an earlier clip may still be transcribing.
-`cancel` discards the recording. See `crates/daemon/src/app.rs`.
+`cancel` discards the recording and any clip not yet being injected. See `crates/daemon/src/app.rs`.
 
 **Engine** — the speech-to-text engine chosen by `stt.engine`: `whisper`
 (whisper.cpp's whisper-server) or `parakeet` (NVIDIA Parakeet via `whispy-stt` on
