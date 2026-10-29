@@ -10,6 +10,7 @@ mod config;
 mod display;
 mod engine;
 mod filter;
+mod host;
 mod inject;
 mod llm;
 mod pipeline;
@@ -234,21 +235,15 @@ fn run(cfg: Config) -> std::io::Result<()> {
 }
 
 /// Warn (don't fail) if the binaries the configured injection backend + mode need
-/// are not on `PATH`. Shares the tool list with `whispy-daemon setup doctor` via
-/// [`setup::required_tools`] so the two never drift.
-///
-/// On X11 the clipboard requirement is "xclip *or* xsel"; `required_tools` lists
-/// `xclip`, so an installed `xsel` would still warn here. That's intentionally
-/// conservative — the warning names the preferred tool and doctor explains the
-/// fallback; injection itself uses whichever is present.
+/// are not on `PATH`. Reads the same [`host::dictation`] verdict as
+/// `whispy-daemon setup doctor`, so the two never drift (an X11 host with only
+/// `xsel` satisfies the clipboard requirement in both).
 fn warn_missing_tools(cfg: &Config, server: DisplayServer) {
-    for (tool, _note) in setup::required_tools(server, &cfg.injection.mode) {
-        if tool == "xclip" && setup::have("xsel") {
-            continue; // xsel is an accepted fallback for the X11 clipboard.
-        }
-        if !setup::have(tool) {
+    let type_mode = cfg.injection.mode.eq_ignore_ascii_case("type");
+    for check in host::dictation(&host::System, server, type_mode) {
+        if !check.ok {
             warn!(
-                tool,
+                tool = check.name,
                 "required tool not found on PATH; dictation may fail (run `whispy-daemon setup doctor`)"
             );
         }

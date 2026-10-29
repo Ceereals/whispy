@@ -345,8 +345,9 @@ struct X11Clipboard {
 impl X11Clipboard {
     /// Probe once for the clipboard CLI: `xclip` preferred, `xsel` fallback.
     fn detect() -> Self {
+        let found = crate::host::x11_clipboard(&crate::host::System);
         Self {
-            clip: pick_x11_clip(crate::setup::have("xclip"), crate::setup::have("xsel")),
+            clip: pick_x11_clip(found == Some("xclip"), found == Some("xsel")),
         }
     }
 }
