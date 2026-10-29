@@ -10,64 +10,27 @@
 //! - `type`: type the transcript directly (Wayland `wtype` virtual keyboard, or X11
 //!   `xdotool type`). Works in terminals too and touches no clipboard.
 //!
-//! The clipboard/type plumbing is a swappable [`InjectBackend`] chosen from the
-//! resolved [`DisplayServer`] ([`WaylandClipboard`] for Wayland, [`X11Clipboard`]
-//! for X11). The portable `ydotool` paste keystroke is the same on both, so it
-//! lives in [`Injector`] rather than the backend (and is the only hard-error path).
+//! The clipboard and typing plumbing is the display server's [`Desktop`] adapter
+//! (Wayland or X11). The portable `ydotool` paste keystroke is the same on both, so
+//! it lives in [`Injector`] rather than the desktop (and is the only hard-error path).
 //!
-//! [`Injector::inject`] dispatches to the configured mode over the chosen backend.
+//! [`Injector::inject`] dispatches to the configured mode over the desktop.
 
 use std::process::Command;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tracing::{debug, warn};
 
 use crate::config::InjectMode;
-use crate::display::DisplayServer;
+use crate::desktop::{Desktop, mime_is_text};
 use crate::proc;
 
-/// A swappable clipboard + direct-typing backend (Wayland or X11). The portable
-/// `ydotool` paste keystroke is *not* part of this trait — it lives in [`Injector`].
-pub trait InjectBackend: Send + Sync {
-    /// A short backend name for logs/tests (`"wayland"` / `"x11"`).
-    fn name(&self) -> &'static str;
-
-    /// Type `text` directly into the focused window (Wayland `wtype` / X11 `xdotool`).
-    fn type_text(&self, text: &str) -> Result<(), InjectError>;
-
-    /// The top MIME type currently advertised by the clipboard, if any.
-    fn top_mime_type(&self) -> Option<String>;
-
-    /// Read the clipboard contents for `mime`.
-    fn read_clipboard(&self, mime: &str) -> Result<Vec<u8>, String>;
-
-    /// Copy `bytes` onto the clipboard, optionally with an explicit MIME type.
-    fn copy_clipboard(&self, mime: Option<&str>, bytes: &[u8]) -> Result<(), String>;
-
-    /// Clear the clipboard.
-    fn clear_clipboard(&self) -> Result<(), String>;
-
-    /// Read the clipboard as text for the `{{CLIPBOARD}}` snippet placeholder.
-    ///
-    /// Default: read the top MIME type if it is text and decode it lossily; empty
-    /// string on any failure or non-text clipboard. The result is intentionally
-    /// **not trimmed** — clipboard whitespace may be meaningful.
-    fn read_clipboard_text(&self) -> String {
-        match self.top_mime_type() {
-            Some(mime) if mime_is_text(&mime) => match self.read_clipboard(&mime) {
-                Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
-                Err(_) => String::new(),
-            },
-            _ => String::new(),
-        }
-    }
-}
-
-/// Dispatches injection to the configured mode, over a [`InjectBackend`] chosen
-/// from the resolved display server. Preserves the user's clipboard across pastes.
+/// Dispatches injection to the configured mode, over the display server's
+/// [`Desktop`]. Preserves the user's clipboard across pastes.
 pub struct Injector {
-    /// The clipboard/type backend (Wayland or X11).
-    backend: Box<dyn InjectBackend>,
+    /// The clipboard/typing adapter (Wayland or X11).
+    desktop: Arc<dyn Desktop>,
     /// Type the transcript, or clipboard + paste it.
     mode: InjectMode,
     /// ydotool key tokens (e.g. `["29:1", "47:1", "47:0", "29:0"]`).
@@ -112,21 +75,17 @@ enum Saved {
 }
 
 impl Injector {
-    /// Build an injector from the `[injection]` config section and the resolved
-    /// display server (which selects the clipboard/type backend).
-    pub fn new(cfg: &crate::config::Injection, server: DisplayServer) -> Self {
+    /// Build an injector from the `[injection]` config section, driving `desktop`'s
+    /// clipboard and typing.
+    pub fn new(cfg: &crate::config::Injection, desktop: Arc<dyn Desktop>) -> Self {
         let paste_keys = cfg
             .paste_keys
             .split_whitespace()
             .map(String::from)
             .collect();
-        let backend: Box<dyn InjectBackend> = match server {
-            DisplayServer::Wayland => Box::new(WaylandClipboard),
-            DisplayServer::X11 => Box::new(X11Clipboard::detect()),
-        };
-        debug!(backend = backend.name(), mode = %cfg.mode, "injection backend selected");
+        debug!(desktop = desktop.name(), mode = %cfg.mode, "injector ready");
         Self {
-            backend,
+            desktop,
             mode: cfg.mode,
             paste_keys,
             key_delay_ms: cfg.key_delay_ms,
@@ -134,15 +93,10 @@ impl Injector {
         }
     }
 
-    /// The clipboard/type backend this injector drives (for pipeline clipboard reads).
-    pub fn backend(&self) -> &dyn InjectBackend {
-        self.backend.as_ref()
-    }
-
     /// Inject `text` into the focused window using the configured mode.
     pub fn inject(&self, text: &str) -> Result<(), InjectError> {
         match self.mode {
-            InjectMode::Type => self.backend.type_text(text),
+            InjectMode::Type => self.desktop.type_text(text).map_err(InjectError::Type),
             InjectMode::Paste => self.paste_text(text),
         }
     }
@@ -158,7 +112,7 @@ impl Injector {
         let saved = self.save_clipboard();
 
         // 2. Copy the transcript onto the clipboard.
-        self.backend
+        self.desktop
             .copy_clipboard(None, text.as_bytes())
             .map_err(|e| InjectError::Clipboard(format!("copy transcript: {e}")))?;
 
@@ -178,7 +132,7 @@ impl Injector {
     ///
     /// Never fails: an unreadable or empty clipboard is reported as [`Saved::Empty`].
     fn save_clipboard(&self) -> Saved {
-        let Some(mime) = self.backend.top_mime_type() else {
+        let Some(mime) = self.desktop.top_mime_type() else {
             debug!("clipboard empty or unreadable; nothing to restore");
             return Saved::Empty;
         };
@@ -188,7 +142,7 @@ impl Injector {
             return Saved::Binary { mime };
         }
 
-        match self.backend.read_clipboard(&mime) {
+        match self.desktop.read_clipboard(&mime) {
             Ok(bytes) => {
                 debug!(mime = %mime, len = bytes.len(), "saved text clipboard");
                 Saved::Text { mime, bytes }
@@ -201,7 +155,7 @@ impl Injector {
     }
 
     /// Deliver the configured paste keystroke via `ydotool key`. Portable across
-    /// Wayland and X11 (uinput-based), so it stays here rather than in the backend.
+    /// Wayland and X11 (uinput-based), so it stays here rather than in the desktop.
     fn paste(&self) -> Result<(), InjectError> {
         let status = proc::status(
             Command::new("ydotool")
@@ -230,8 +184,8 @@ impl Injector {
     /// Put the previously-saved clipboard contents back (best-effort).
     fn restore_clipboard(&self, saved: &Saved) {
         let result = match saved {
-            Saved::Empty => self.backend.clear_clipboard(),
-            Saved::Text { mime, bytes } => self.backend.copy_clipboard(Some(mime), bytes),
+            Saved::Empty => self.desktop.clear_clipboard(),
+            Saved::Text { mime, bytes } => self.desktop.copy_clipboard(Some(mime), bytes),
             Saved::Binary { mime } => {
                 warn!(mime = %mime, "skipping restore of non-text clipboard");
                 return;
@@ -245,263 +199,71 @@ impl Injector {
     }
 }
 
-// --- Wayland backend --------------------------------------------------------
-
-/// Wayland clipboard + typing via `wl-copy`/`wl-paste` and `wtype`.
-struct WaylandClipboard;
-
-impl InjectBackend for WaylandClipboard {
-    fn name(&self) -> &'static str {
-        "wayland"
-    }
-
-    /// Type the transcript directly with `wtype` (Wayland virtual keyboard).
-    /// Preserves accents and works in terminals; no clipboard is touched.
-    fn type_text(&self, text: &str) -> Result<(), InjectError> {
-        // `--` stops wtype's option parsing, so a transcript starting with `-`
-        // is typed literally instead of being read as a flag.
-        let status = proc::status(Command::new("wtype").arg("--").arg(text), proc::TYPING)
-            .map_err(|e| {
-                InjectError::Type(format!("failed to run wtype ({e}); is wtype installed?"))
-            })?;
-        if !status.success() {
-            return Err(InjectError::Type(format!("wtype exited with {status}")));
-        }
-        debug!(chars = text.chars().count(), "typed via wtype");
-        Ok(())
-    }
-
-    /// Read the top MIME type advertised by the clipboard, if any.
-    ///
-    /// Runs `wl-paste --list-types` and returns the first non-empty trimmed line.
-    fn top_mime_type(&self) -> Option<String> {
-        let bytes = run_capture("wl-paste", &["--list-types"]).ok()?;
-        let text = String::from_utf8_lossy(&bytes);
-        text.lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty())
-            .map(String::from)
-    }
-
-    fn read_clipboard(&self, mime: &str) -> Result<Vec<u8>, String> {
-        run_capture("wl-paste", &["--no-newline", "--type", mime])
-    }
-
-    fn copy_clipboard(&self, mime: Option<&str>, bytes: &[u8]) -> Result<(), String> {
-        let mut cmd = Command::new("wl-copy");
-        if let Some(mime) = mime {
-            cmd.arg("--type").arg(mime);
-        }
-        feed_stdin(cmd, "wl-copy", bytes)
-    }
-
-    fn clear_clipboard(&self) -> Result<(), String> {
-        let status = proc::status(Command::new("wl-copy").arg("--clear"), proc::CLIPBOARD)
-            .map_err(|e| format!("failed to run wl-copy: {e}"))?;
-        if !status.success() {
-            return Err(format!("wl-copy --clear exited with {status}"));
-        }
-        Ok(())
-    }
-
-    /// Read the clipboard text via `wl-paste --no-newline` (no MIME negotiation),
-    /// matching the historical `{{CLIPBOARD}}` behavior. Not trimmed.
-    fn read_clipboard_text(&self) -> String {
-        match proc::output(
-            Command::new("wl-paste").arg("--no-newline"),
-            proc::CLIPBOARD,
-        ) {
-            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),
-            _ => String::new(),
-        }
-    }
-}
-
-// --- X11 backend ------------------------------------------------------------
-
-/// Which X11 clipboard CLI we found at construction time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum X11Clip {
-    /// `xclip -selection clipboard`.
-    Xclip,
-    /// `xsel --clipboard`.
-    Xsel,
-    /// Neither found — clipboard ops fail loudly; typing still works via xdotool.
-    None,
-}
-
-/// X11 clipboard + typing via `xdotool type` and `xclip` (preferred) or `xsel`.
-struct X11Clipboard {
-    clip: X11Clip,
-}
-
-impl X11Clipboard {
-    /// Probe once for the clipboard CLI: `xclip` preferred, `xsel` fallback.
-    fn detect() -> Self {
-        let found = crate::host::x11_clipboard(&crate::host::System);
-        Self {
-            clip: pick_x11_clip(found == Some("xclip"), found == Some("xsel")),
-        }
-    }
-}
-
-impl InjectBackend for X11Clipboard {
-    fn name(&self) -> &'static str {
-        "x11"
-    }
-
-    /// Type the transcript directly with `xdotool type`. `--clearmodifiers` drops
-    /// any held modifier (so a held push-to-talk key doesn't corrupt the text);
-    /// `--` stops option parsing so a leading `-` is typed literally.
-    fn type_text(&self, text: &str) -> Result<(), InjectError> {
-        let status = proc::status(
-            Command::new("xdotool")
-                .args(["type", "--clearmodifiers", "--"])
-                .arg(text),
-            proc::TYPING,
-        )
-        .map_err(|e| {
-            InjectError::Type(format!(
-                "failed to run xdotool ({e}); is xdotool installed?"
-            ))
-        })?;
-        if !status.success() {
-            return Err(InjectError::Type(format!("xdotool exited with {status}")));
-        }
-        debug!(chars = text.chars().count(), "typed via xdotool");
-        Ok(())
-    }
-
-    /// X11 selections are untyped (no MIME advertisement). Report a generic text
-    /// target when the clipboard holds anything, so the save/restore path treats
-    /// it as text (`mime_is_text("UTF8_STRING")` is true).
-    fn top_mime_type(&self) -> Option<String> {
-        if self.clip == X11Clip::None {
-            return None;
-        }
-        let bytes = self.read_clipboard("UTF8_STRING").ok()?;
-        if bytes.is_empty() {
-            None
-        } else {
-            Some("UTF8_STRING".to_string())
-        }
-    }
-
-    /// Read the CLIPBOARD selection. The `mime` is advisory only (X11 has no MIME
-    /// layer at this level); both tools return the selection's text bytes.
-    fn read_clipboard(&self, _mime: &str) -> Result<Vec<u8>, String> {
-        match self.clip {
-            X11Clip::Xclip => run_capture("xclip", &["-selection", "clipboard", "-o"]),
-            X11Clip::Xsel => run_capture("xsel", &["--clipboard", "--output"]),
-            X11Clip::None => Err("no X11 clipboard tool (install xclip or xsel)".to_string()),
-        }
-    }
-
-    /// Copy onto the CLIPBOARD selection (matches `wl-copy` + Ctrl+V). The `mime`
-    /// is ignored: X11 stores the bytes as the selection's text targets.
-    fn copy_clipboard(&self, _mime: Option<&str>, bytes: &[u8]) -> Result<(), String> {
-        match self.clip {
-            X11Clip::Xclip => {
-                let mut cmd = Command::new("xclip");
-                cmd.args(["-selection", "clipboard"]);
-                feed_stdin(cmd, "xclip", bytes)
-            }
-            X11Clip::Xsel => {
-                let mut cmd = Command::new("xsel");
-                cmd.args(["--clipboard", "--input"]);
-                feed_stdin(cmd, "xsel", bytes)
-            }
-            X11Clip::None => Err("no X11 clipboard tool (install xclip or xsel)".to_string()),
-        }
-    }
-
-    /// Clear the CLIPBOARD selection.
-    fn clear_clipboard(&self) -> Result<(), String> {
-        match self.clip {
-            X11Clip::Xclip => {
-                // xclip has no `--clear`; copying empty bytes empties the selection.
-                let mut cmd = Command::new("xclip");
-                cmd.args(["-selection", "clipboard"]);
-                feed_stdin(cmd, "xclip", b"")
-            }
-            X11Clip::Xsel => {
-                let status = proc::status(
-                    Command::new("xsel").args(["--clipboard", "--clear"]),
-                    proc::CLIPBOARD,
-                )
-                .map_err(|e| format!("failed to run xsel: {e}"))?;
-                if !status.success() {
-                    return Err(format!("xsel --clear exited with {status}"));
-                }
-                Ok(())
-            }
-            X11Clip::None => Err("no X11 clipboard tool (install xclip or xsel)".to_string()),
-        }
-    }
-}
-
-/// Pick the X11 clipboard CLI: `xclip` preferred, `xsel` fallback, else none.
-/// Pure (takes presence booleans) so the choice is unit-testable.
-fn pick_x11_clip(have_xclip: bool, have_xsel: bool) -> X11Clip {
-    if have_xclip {
-        X11Clip::Xclip
-    } else if have_xsel {
-        X11Clip::Xsel
-    } else {
-        X11Clip::None
-    }
-}
-
-// --- shared helpers ---------------------------------------------------------
-
-/// Whether a clipboard MIME type holds text we can capture and restore.
-///
-/// Treats anything starting with `text/`, the X11 `STRING`/`UTF8_STRING`
-/// targets, or any type whose name contains "text" as text; everything else
-/// (images, octet streams, ...) is binary.
-fn mime_is_text(mime: &str) -> bool {
-    let lower = mime.to_ascii_lowercase();
-    lower.starts_with("text/")
-        || lower == "string"
-        || lower == "utf8_string"
-        || lower.contains("text")
-}
-
-/// Run a command and return its stdout bytes, erroring on a non-zero exit.
-fn run_capture(program: &str, args: &[&str]) -> Result<Vec<u8>, String> {
-    let output = proc::output(Command::new(program).args(args), proc::CLIPBOARD)
-        .map_err(|e| format!("failed to run {program}: {e}"))?;
-    if !output.status.success() {
-        return Err(format!("{program} exited with {}", output.status));
-    }
-    Ok(output.stdout)
-}
-
-/// Run `cmd` with `bytes` on its stdin (then closed), bounded by [`proc::CLIPBOARD`].
-/// `name` is the program name, used only in error messages.
-fn feed_stdin(mut cmd: Command, name: &str, bytes: &[u8]) -> Result<(), String> {
-    let status = proc::with_stdin(&mut cmd, bytes, proc::CLIPBOARD)
-        .map_err(|e| format!("failed to run {name}: {e}"))?;
-    if !status.success() {
-        return Err(format!("{name} exited with {status}"));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+    /// A recording [`Desktop`] fake: logs every clipboard/typing call, runs nothing.
+    #[derive(Default)]
+    struct FakeDesktop {
+        calls: Mutex<Vec<String>>,
+        type_error: Option<&'static str>,
+    }
+
+    impl FakeDesktop {
+        fn log(&self, call: String) {
+            self.calls.lock().unwrap().push(call);
+        }
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl Desktop for FakeDesktop {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+        fn window_class(&self) -> Option<String> {
+            None
+        }
+        fn type_text(&self, text: &str) -> Result<(), String> {
+            self.log(format!("type {text}"));
+            self.type_error.map_or(Ok(()), |e| Err(e.to_string()))
+        }
+        fn top_mime_type(&self) -> Option<String> {
+            self.log("top_mime_type".to_string());
+            None
+        }
+        fn read_clipboard(&self, mime: &str) -> Result<Vec<u8>, String> {
+            self.log(format!("read {mime}"));
+            Ok(Vec::new())
+        }
+        fn copy_clipboard(&self, _mime: Option<&str>, bytes: &[u8]) -> Result<(), String> {
+            self.log(format!("copy {}", String::from_utf8_lossy(bytes)));
+            Ok(())
+        }
+        fn clear_clipboard(&self) -> Result<(), String> {
+            self.log("clear".to_string());
+            Ok(())
+        }
+    }
+
+    fn injection(mode: InjectMode, paste_keys: &str) -> crate::config::Injection {
+        crate::config::Injection {
+            mode,
+            backend: crate::display::Backend::Auto,
+            restore_clipboard_delay_ms: 150,
+            paste_keys: paste_keys.to_string(),
+            key_delay_ms: 25,
+        }
+    }
 
     fn injector_with_keys(paste_keys: &str) -> Injector {
         Injector::new(
-            &crate::config::Injection {
-                mode: InjectMode::Paste,
-                backend: crate::display::Backend::Auto,
-                restore_clipboard_delay_ms: 150,
-                paste_keys: paste_keys.to_string(),
-                key_delay_ms: 25,
-            },
-            DisplayServer::Wayland,
+            &injection(InjectMode::Paste, paste_keys),
+            Arc::new(FakeDesktop::default()),
         )
     }
 
@@ -524,66 +286,43 @@ mod tests {
     }
 
     #[test]
-    fn empty_paste_keys_is_a_paste_error() {
-        let inj = injector_with_keys("   ");
+    fn empty_paste_keys_is_a_paste_error_before_touching_the_clipboard() {
+        let desktop = Arc::new(FakeDesktop::default());
+        let inj = Injector::new(
+            &injection(InjectMode::Paste, "   "),
+            Arc::<FakeDesktop>::clone(&desktop),
+        );
         assert_eq!(inj.paste_keys, Vec::<String>::new());
         match inj.inject("hello") {
             Err(InjectError::Paste(msg)) => assert!(msg.contains("no paste_keys")),
             other => panic!("expected Paste error, got {other:?}"),
         }
+        assert_eq!(desktop.calls(), Vec::<String>::new());
     }
 
     #[test]
-    fn new_selects_backend_by_display_server() {
-        let cfg = crate::config::Injection {
-            mode: InjectMode::Paste,
-            backend: crate::display::Backend::Auto,
-            restore_clipboard_delay_ms: 150,
-            paste_keys: "29:1 29:0".to_string(),
-            key_delay_ms: 25,
-        };
-        assert_eq!(
-            Injector::new(&cfg, DisplayServer::Wayland).backend().name(),
-            "wayland"
+    fn type_mode_types_through_the_desktop_without_the_clipboard() {
+        let desktop = Arc::new(FakeDesktop::default());
+        let inj = Injector::new(
+            &injection(InjectMode::Type, "29:1 29:0"),
+            Arc::<FakeDesktop>::clone(&desktop),
         );
-        assert_eq!(
-            Injector::new(&cfg, DisplayServer::X11).backend().name(),
-            "x11"
-        );
+        inj.inject("ciao").expect("typed");
+        assert_eq!(desktop.calls(), ["type ciao"]);
     }
 
     #[test]
-    fn x11_clip_prefers_xclip_then_xsel_then_none() {
-        assert_eq!(pick_x11_clip(true, true), X11Clip::Xclip);
-        assert_eq!(pick_x11_clip(true, false), X11Clip::Xclip);
-        assert_eq!(pick_x11_clip(false, true), X11Clip::Xsel);
-        assert_eq!(pick_x11_clip(false, false), X11Clip::None);
-    }
-
-    #[test]
-    fn text_mime_types_are_classified_as_text() {
-        for mime in [
-            "text/plain",
-            "text/plain;charset=utf-8",
-            "TEXT/HTML",
-            "STRING",
-            "UTF8_STRING",
-            "utf8_string",
-            "application/x-moz-nativehtml-text",
-        ] {
-            assert!(mime_is_text(mime), "{mime} should be text");
-        }
-    }
-
-    #[test]
-    fn binary_mime_types_are_classified_as_binary() {
-        for mime in [
-            "image/png",
-            "image/jpeg",
-            "application/octet-stream",
-            "application/pdf",
-        ] {
-            assert!(!mime_is_text(mime), "{mime} should be binary");
+    fn type_mode_failure_is_a_type_error() {
+        let desktop = Arc::new(FakeDesktop {
+            type_error: Some("wtype exited with 1"),
+            ..FakeDesktop::default()
+        });
+        let inj = Injector::new(&injection(InjectMode::Type, "29:1 29:0"), desktop);
+        match inj.inject("ciao") {
+            Err(e @ InjectError::Type(_)) => {
+                assert_eq!(e.to_string(), "type error: wtype exited with 1");
+            }
+            other => panic!("expected Type error, got {other:?}"),
         }
     }
 

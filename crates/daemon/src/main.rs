@@ -7,6 +7,7 @@
 mod app;
 mod audio;
 mod config;
+mod desktop;
 mod display;
 mod engine;
 mod filter;
@@ -40,6 +41,7 @@ use crate::config::Config;
 use crate::display::DisplayServer;
 use crate::engine::VocabStrategy;
 use crate::filter::Hallucinations;
+use crate::pipeline::TextPipeline;
 use crate::state::{StatePublisher, Status, now};
 use crate::stt::SttClient;
 use crate::stt_server::SttSupervisor;
@@ -161,9 +163,12 @@ fn run(cfg: Config) -> std::io::Result<()> {
     // supervisor keeps it alive until `stop`.
     let stt_server = SttSupervisor::start(&cfg.stt, &config::state_dir(), Arc::clone(&shutdown))?;
 
-    // The engine decides how the custom vocabulary reaches it: a decoding prompt
-    // (whisper) here, or a correction of the transcript in `pipeline` (Parakeet).
-    let vocab_prompt = match cfg.stt.engine.vocabulary(&cfg.dictionary.vocabulary) {
+    // The engine decides, once, how the custom vocabulary reaches it: a decoding
+    // prompt for the STT client (whisper), or a correction of the transcript in
+    // the text pipeline (Parakeet).
+    let vocab = cfg.stt.engine.vocabulary(&cfg.dictionary.vocabulary);
+    let pipeline = TextPipeline::new(&cfg, &vocab);
+    let vocab_prompt = match vocab {
         VocabStrategy::Prompt(prompt) => Some(prompt),
         VocabStrategy::Correct | VocabStrategy::Off => None,
     };
@@ -172,7 +177,7 @@ fn run(cfg: Config) -> std::io::Result<()> {
     let socket_path = cfg.ipc.socket_path();
 
     status.idle();
-    let app = Arc::new(App::new(cfg, status, stt, blacklist, server));
+    let app = Arc::new(App::new(cfg, status, stt, blacklist, server, pipeline));
 
     // Serve until SIGTERM/SIGINT.
     let result = server::serve(&socket_path, app, Arc::clone(&shutdown));

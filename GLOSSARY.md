@@ -2,6 +2,11 @@
 
 Terms used in whispy's code, config, and docs.
 
+**Desktop** — the display server as the daemon sees it: the focused window's
+class, the clipboard, and typing into the focused window. One adapter per
+display server (Wayland, X11), chosen from `injection.backend` and the session
+environment. See `crates/daemon/src/desktop.rs`.
+
 **Editable setting** — a config value the settings screen (`whispy-daemon
 settings`) changes: microphone, engine, language, typing mode, auto-stop. Each is
 declared once with its `[table] key`, its options, and how it is read from the

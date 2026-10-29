@@ -1,15 +1,21 @@
-//! Post-transcription text pipeline: vocabulary (Parakeet) -> corrections ->
-//! snippets -> AI workflow.
+//! Post-transcription text pipeline: vocabulary correction (Parakeet) ->
+//! corrections -> snippets -> AI workflow.
+//!
+//! A [`TextPipeline`] is prepared once at startup from the config and the
+//! engine's vocabulary strategy; [`TextPipeline::process`] then runs every
+//! accepted transcript through it and never fails (LLM errors fall back to the
+//! text as it stood before the workflow). Snippet placeholders are resolved
+//! through a narrow [`PlaceholderEnv`]: [`LiveEnv`] in the daemon (the desktop
+//! clipboard and `date`), a fake in tests.
 
 use std::collections::BTreeMap;
 use std::process::Command;
 
 use tracing::{info, warn};
 
-use crate::config::{Config, Workflow};
-use crate::display::DisplayServer;
+use crate::config::{Config, Llm, Workflow};
+use crate::desktop::Desktop;
 use crate::engine::VocabStrategy;
-use crate::inject::InjectBackend;
 use crate::proc;
 
 /// Context for one transcript: which workflow was requested and the focused window.
@@ -21,58 +27,136 @@ pub struct AppContext {
     pub window_class: Option<String>,
 }
 
-/// Run the accepted transcript through corrections, snippets, then the selected
-/// workflow's LLM transform. Never fails: LLM errors fall back to the input text.
-///
-/// `backend` resolves the `{{CLIPBOARD}}` snippet placeholder (Wayland/X11).
-pub fn process(
-    text: String,
-    cfg: &Config,
-    ctx: &AppContext,
-    backend: &dyn InjectBackend,
-) -> String {
-    // Engines that can't take the vocabulary as a decoding prompt get their
-    // transcript corrected instead (the prompt side is wired up in `main`).
-    let text = match cfg.stt.engine.vocabulary(&cfg.dictionary.vocabulary) {
-        VocabStrategy::Correct => crate::vocab::apply(
-            &text,
-            &cfg.dictionary.vocabulary,
-            crate::vocab::DEFAULT_THRESHOLD,
-        ),
-        VocabStrategy::Prompt(_) | VocabStrategy::Off => text,
-    };
-    let text = apply_corrections(&text, &cfg.dictionary.corrections);
-    let text = apply_snippets(&text, &cfg.snippets.entries, backend);
+/// Where snippet placeholders get their live values. Each method is called only
+/// when a matched snippet's replacement uses its placeholder.
+pub trait PlaceholderEnv {
+    /// `{{CLIPBOARD}}`: the clipboard as text, untrimmed; empty when unavailable.
+    fn clipboard_text(&self) -> String;
+    /// `{{DATE}}`: today's local date as `YYYY-MM-DD`; empty when unavailable.
+    fn date(&self) -> String;
+    /// `{{TIME}}`: the local time as `HH:MM`; empty when unavailable.
+    fn time(&self) -> String;
+}
 
-    match select_workflow(cfg, ctx) {
-        Some(wf) if !wf.prompt.trim().is_empty() => {
-            match crate::llm::transform(&cfg.llm, &wf.prompt, &text) {
-                Ok(out) if !out.is_empty() => {
-                    info!(workflow = %wf.name, "applied AI workflow");
-                    out
-                }
-                Ok(_) => text,
-                Err(e) => {
-                    warn!(workflow = %wf.name, error = %e, "AI workflow failed; injecting raw transcript");
-                    text
+/// The daemon's [`PlaceholderEnv`]: the clipboard through the [`Desktop`], the
+/// date and time through `date` (so they follow the system's local time zone).
+pub struct LiveEnv<'a> {
+    desktop: &'a dyn Desktop,
+}
+
+impl<'a> LiveEnv<'a> {
+    /// Resolve `{{CLIPBOARD}}` through `desktop`.
+    pub fn new(desktop: &'a dyn Desktop) -> Self {
+        Self { desktop }
+    }
+}
+
+impl PlaceholderEnv for LiveEnv<'_> {
+    fn clipboard_text(&self) -> String {
+        self.desktop.clipboard_text()
+    }
+
+    fn date(&self) -> String {
+        shell_date("+%Y-%m-%d")
+    }
+
+    fn time(&self) -> String {
+        shell_date("+%H:%M")
+    }
+}
+
+/// The text pipeline, prepared from the config: everything a transcript needs
+/// between the hallucination filter and injection.
+pub struct TextPipeline {
+    /// Custom words to fuzzy-correct transcripts against; empty unless the engine
+    /// can't take the vocabulary as a decoding prompt (Parakeet).
+    vocabulary: Vec<String>,
+    /// Case-insensitive, whole-word replacements, applied in key order.
+    corrections: BTreeMap<String, String>,
+    /// Snippet (trigger, replacement) pairs, longest trigger first so a longer
+    /// trigger wins over a shorter overlapping one.
+    snippets: Vec<(String, String)>,
+    /// AI workflows, selected per transcript by request or window class.
+    workflows: Vec<Workflow>,
+    /// The chat endpoint workflows run against.
+    llm: Llm,
+}
+
+impl TextPipeline {
+    /// Prepare the pipeline from `cfg`. `vocab` is the engine's vocabulary
+    /// strategy, decided once at startup: only [`VocabStrategy::Correct`] makes
+    /// the pipeline correct transcripts (a prompt goes to the STT client instead).
+    pub fn new(cfg: &Config, vocab: &VocabStrategy) -> Self {
+        let vocabulary = match vocab {
+            VocabStrategy::Correct => cfg.dictionary.vocabulary.clone(),
+            VocabStrategy::Prompt(_) | VocabStrategy::Off => Vec::new(),
+        };
+        let mut snippets: Vec<(String, String)> = cfg
+            .snippets
+            .entries
+            .iter()
+            .map(|(trigger, replacement)| (trigger.clone(), replacement.clone()))
+            .collect();
+        snippets.sort_by_key(|(trigger, _)| std::cmp::Reverse(trigger.chars().count()));
+        Self {
+            vocabulary,
+            corrections: cfg.dictionary.corrections.clone(),
+            snippets,
+            workflows: cfg.workflow.clone(),
+            llm: cfg.llm.clone(),
+        }
+    }
+
+    /// Run an accepted transcript through vocabulary correction, corrections,
+    /// snippets (placeholders from `env`), then the workflow `ctx` selects: an
+    /// explicit request wins over the window class. Never fails: an LLM error
+    /// (or empty reply) leaves the text as the snippets produced it.
+    pub fn process(&self, text: String, ctx: &AppContext, env: &dyn PlaceholderEnv) -> String {
+        let text = crate::vocab::apply(&text, &self.vocabulary, crate::vocab::DEFAULT_THRESHOLD);
+        let text = apply_corrections(&text, &self.corrections);
+        let text = self.expand_snippets(&text, env);
+
+        match pick_workflow(
+            &self.workflows,
+            ctx.workflow.as_deref(),
+            ctx.window_class.as_deref(),
+        ) {
+            Some(wf) if !wf.prompt.trim().is_empty() => {
+                match crate::llm::transform(&self.llm, &wf.prompt, &text) {
+                    Ok(out) if !out.is_empty() => {
+                        info!(workflow = %wf.name, "applied AI workflow");
+                        out
+                    }
+                    Ok(_) => text,
+                    Err(e) => {
+                        warn!(workflow = %wf.name, error = %e, "AI workflow failed; injecting raw transcript");
+                        text
+                    }
                 }
             }
+            _ => text,
         }
-        _ => text,
+    }
+
+    /// Expand text-expansion snippets, longest trigger first. Placeholders are
+    /// resolved live and only for snippets whose trigger is present (each may
+    /// read the clipboard or run `date`, so don't pay for every configured
+    /// snippet on every transcript).
+    fn expand_snippets(&self, text: &str, env: &dyn PlaceholderEnv) -> String {
+        let mut acc = text.to_string();
+        for (trigger, replacement) in &self.snippets {
+            if !contains_phrase_ci(&acc, trigger) {
+                continue;
+            }
+            let resolved = resolve_placeholders(replacement, env);
+            acc = replace_phrase_ci(&acc, trigger, &resolved);
+        }
+        acc
     }
 }
 
 /// Pick the workflow for this transcript. An explicit request (hotkey) wins over
 /// app-based auto-selection; with neither, no workflow runs.
-fn select_workflow<'a>(cfg: &'a Config, ctx: &AppContext) -> Option<&'a Workflow> {
-    pick_workflow(
-        &cfg.workflow,
-        ctx.workflow.as_deref(),
-        ctx.window_class.as_deref(),
-    )
-}
-
-/// Core selection logic, factored out for unit testing over a plain slice.
 fn pick_workflow<'a>(
     workflows: &'a [Workflow],
     requested: Option<&str>,
@@ -91,40 +175,11 @@ fn pick_workflow<'a>(
 
 /// Apply case-insensitive, whole-word dictionary corrections in order.
 fn apply_corrections(text: &str, corrections: &BTreeMap<String, String>) -> String {
-    if corrections.is_empty() {
-        return text.to_string();
-    }
     corrections
         .iter()
         .fold(text.to_string(), |acc, (from, to)| {
             replace_phrase_ci(&acc, from, to)
         })
-}
-
-/// Expand text-expansion snippets. Longer triggers are applied first so they win
-/// over shorter overlapping ones; placeholders in replacements are resolved live,
-/// and only for snippets whose trigger is present (each one may run `wl-paste` or
-/// `date`, so don't pay for every configured snippet on every transcript).
-fn apply_snippets(
-    text: &str,
-    entries: &BTreeMap<String, String>,
-    backend: &dyn InjectBackend,
-) -> String {
-    if entries.is_empty() {
-        return text.to_string();
-    }
-    let mut sorted: Vec<(&String, &String)> = entries.iter().collect();
-    sorted.sort_by_key(|e| std::cmp::Reverse(e.0.chars().count()));
-
-    let mut acc = text.to_string();
-    for (trigger, replacement) in sorted {
-        if !contains_phrase_ci(&acc, trigger) {
-            continue;
-        }
-        let resolved = resolve_placeholders(replacement, backend);
-        acc = replace_phrase_ci(&acc, trigger, &resolved);
-    }
-    acc
 }
 
 /// Case-insensitive, whole-word phrase replacement.
@@ -180,18 +235,18 @@ fn boundary_ok(chars: &[char], start: usize, len: usize) -> bool {
     before_ok && after_ok
 }
 
-/// Substitute `{{DATE}}`, `{{TIME}}`, and `{{CLIPBOARD}}` placeholders in a snippet.
-/// The clipboard read is dispatched through the active injection `backend`.
-fn resolve_placeholders(s: &str, backend: &dyn InjectBackend) -> String {
+/// Substitute `{{DATE}}`, `{{TIME}}`, and `{{CLIPBOARD}}` placeholders in a
+/// snippet replacement, asking `env` only for the ones it uses.
+fn resolve_placeholders(s: &str, env: &dyn PlaceholderEnv) -> String {
     let mut out = s.to_string();
     if out.contains("{{DATE}}") {
-        out = out.replace("{{DATE}}", &shell_date("+%Y-%m-%d"));
+        out = out.replace("{{DATE}}", &env.date());
     }
     if out.contains("{{TIME}}") {
-        out = out.replace("{{TIME}}", &shell_date("+%H:%M"));
+        out = out.replace("{{TIME}}", &env.time());
     }
     if out.contains("{{CLIPBOARD}}") {
-        out = out.replace("{{CLIPBOARD}}", &backend.read_clipboard_text());
+        out = out.replace("{{CLIPBOARD}}", &env.clipboard_text());
     }
     out
 }
@@ -204,143 +259,277 @@ fn shell_date(fmt: &str) -> String {
     }
 }
 
-/// Best-effort: the focused window's class, dispatched by display server.
-///
-/// - Wayland → `hyprctl activewindow -j` (Hyprland), falling back to `swaymsg`
-///   (Sway / wlroots i3-compatible). Other Wayland compositors (GNOME/KDE) expose
-///   no universal protocol, so this returns `None` there.
-/// - X11 → `xdotool getactivewindow getwindowclassname`.
-///
-/// Always `Option<String>`, never panics: app-based workflow auto-selection
-/// degrades silently when the class can't be read (an explicit `--workflow` still
-/// works).
-pub fn active_window_class(server: DisplayServer) -> Option<String> {
-    match server {
-        DisplayServer::Wayland => hyprctl_class().or_else(swaymsg_class),
-        DisplayServer::X11 => xdotool_class(),
-    }
-}
-
-/// Hyprland: focused window class via `hyprctl activewindow -j`.
-fn hyprctl_class() -> Option<String> {
-    let out = proc::output(
-        Command::new("hyprctl").args(["activewindow", "-j"]),
-        proc::PROBE,
-    )
-    .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let v = serde_json::from_slice::<serde_json::Value>(&out.stdout).ok()?;
-    non_empty(v.get("class")?.as_str()?)
-}
-
-/// Sway / wlroots: focused node's `app_id` (Wayland-native) or
-/// `window_properties.class` (`XWayland`) from `swaymsg -t get_tree`.
-fn swaymsg_class() -> Option<String> {
-    let out = proc::output(
-        Command::new("swaymsg").args(["-t", "get_tree"]),
-        proc::PROBE,
-    )
-    .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let tree = serde_json::from_slice::<serde_json::Value>(&out.stdout).ok()?;
-    let node = focused_node(&tree)?;
-    let class = node
-        .get("app_id")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            node.get("window_properties")
-                .and_then(|wp| wp.get("class"))
-                .and_then(|v| v.as_str())
-        })?;
-    non_empty(class)
-}
-
-/// Depth-first search for the `focused: true` node in a sway tree.
-fn focused_node(node: &serde_json::Value) -> Option<&serde_json::Value> {
-    if node.get("focused").and_then(serde_json::Value::as_bool) == Some(true) {
-        return Some(node);
-    }
-    for key in ["nodes", "floating_nodes"] {
-        if let Some(children) = node.get(key).and_then(|v| v.as_array()) {
-            for child in children {
-                if let Some(found) = focused_node(child) {
-                    return Some(found);
-                }
-            }
-        }
-    }
-    None
-}
-
-/// X11: focused window class via `xdotool getactivewindow getwindowclassname`.
-fn xdotool_class() -> Option<String> {
-    let out = proc::output(
-        Command::new("xdotool").args(["getactivewindow", "getwindowclassname"]),
-        proc::PROBE,
-    )
-    .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    non_empty(String::from_utf8_lossy(&out.stdout).trim())
-}
-
-/// `Some(s)` for a non-empty string, `None` otherwise.
-fn non_empty(s: &str) -> Option<String> {
-    if s.is_empty() {
-        None
-    } else {
-        Some(s.to_string())
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
     use super::*;
 
-    /// A stub backend for snippet tests: a fixed clipboard, no real subprocesses.
-    struct StubBackend {
-        clipboard: String,
-        /// How many times the clipboard was read (each is a `wl-paste` for real).
-        reads: std::sync::atomic::AtomicUsize,
+    /// A fixed clock and clipboard, counting how often a placeholder was resolved.
+    struct FakeEnv {
+        clipboard: &'static str,
+        lookups: Cell<usize>,
     }
 
-    impl InjectBackend for StubBackend {
-        fn name(&self) -> &'static str {
-            "stub"
+    impl FakeEnv {
+        fn new(clipboard: &'static str) -> Self {
+            Self {
+                clipboard,
+                lookups: Cell::new(0),
+            }
         }
-        fn type_text(&self, _text: &str) -> Result<(), crate::inject::InjectError> {
-            Ok(())
-        }
-        fn top_mime_type(&self) -> Option<String> {
-            None
-        }
-        fn read_clipboard(&self, _mime: &str) -> Result<Vec<u8>, String> {
-            Ok(self.clipboard.as_bytes().to_vec())
-        }
-        fn copy_clipboard(&self, _mime: Option<&str>, _bytes: &[u8]) -> Result<(), String> {
-            Ok(())
-        }
-        fn clear_clipboard(&self) -> Result<(), String> {
-            Ok(())
-        }
-        fn read_clipboard_text(&self) -> String {
-            self.reads
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            self.clipboard.clone()
+        fn hit(&self) {
+            self.lookups.set(self.lookups.get() + 1);
         }
     }
 
-    fn stub(clipboard: &str) -> StubBackend {
-        StubBackend {
-            clipboard: clipboard.to_string(),
-            reads: std::sync::atomic::AtomicUsize::new(0),
+    impl PlaceholderEnv for FakeEnv {
+        fn clipboard_text(&self) -> String {
+            self.hit();
+            self.clipboard.to_string()
         }
+        fn date(&self) -> String {
+            self.hit();
+            "2026-10-29".to_string()
+        }
+        fn time(&self) -> String {
+            self.hit();
+            "09:41".to_string()
+        }
+    }
+
+    /// The built-in defaults with a fast-failing LLM, ready to customize.
+    fn config() -> Config {
+        let mut cfg: Config =
+            toml::from_str(crate::config::default_config_toml()).expect("defaults parse");
+        cfg.llm.base_url = closed_port_url();
+        cfg.llm.model = "test-model".to_string();
+        cfg.llm.timeout_secs = 2;
+        cfg
+    }
+
+    fn entries(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    fn workflow(name: &str, prompt: &str, apps: &[&str]) -> Workflow {
+        Workflow {
+            name: name.to_string(),
+            prompt: prompt.to_string(),
+            apps: apps.iter().map(ToString::to_string).collect(),
+        }
+    }
+
+    fn ctx(workflow: Option<&str>, window_class: Option<&str>) -> AppContext {
+        AppContext {
+            workflow: workflow.map(String::from),
+            window_class: window_class.map(String::from),
+        }
+    }
+
+    /// A loopback URL nothing listens on, so an LLM call fails fast.
+    fn closed_port_url() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().expect("local addr").port();
+        format!("http://127.0.0.1:{port}/v1")
+    }
+
+    /// Serve one chat-completions reply of `content` on a loopback port. Returns
+    /// the base URL and a receiver for the raw request the pipeline sent.
+    fn llm_replying(content: &str) -> (String, mpsc::Receiver<String>) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().expect("local addr").port();
+        let body =
+            serde_json::json!({ "choices": [{ "message": { "content": content } }] }).to_string();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().expect("accept");
+            // Drain the request before answering.
+            let mut request = Vec::new();
+            let mut buf = [0u8; 4096];
+            let _ = conn.set_read_timeout(Some(Duration::from_millis(200)));
+            while let Ok(n @ 1..) = conn.read(&mut buf) {
+                request.extend_from_slice(&buf[..n]);
+            }
+            let _ = tx.send(String::from_utf8_lossy(&request).to_string());
+            let _ = write!(
+                conn,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        });
+        (format!("http://127.0.0.1:{port}/v1"), rx)
+    }
+
+    #[test]
+    fn process_runs_every_stage_in_order_then_the_window_workflow() {
+        let (base_url, request) = llm_replying("REWRITTEN");
+        let mut cfg = config();
+        cfg.llm.base_url = base_url;
+        cfg.dictionary.vocabulary = vec!["Hyprland".to_string()];
+        // "stemp" -> "stamp" proves corrections run before snippets.
+        cfg.dictionary.corrections = entries(&[("wisper", "whisper"), ("stemp", "stamp")]);
+        cfg.snippets.entries =
+            entries(&[("stamp", "{{DATE}} {{TIME}}"), ("clip", "<{{CLIPBOARD}}>")]);
+        cfg.workflow = vec![workflow("chat", "Rewrite it.", &["kitty"])];
+        let pipeline = TextPipeline::new(&cfg, &VocabStrategy::Correct);
+
+        let out = pipeline.process(
+            "wisper on Hyperland stemp clip".to_string(),
+            &ctx(None, Some("Kitty")),
+            &FakeEnv::new("  board  "),
+        );
+
+        assert_eq!(out, "REWRITTEN");
+        let request = request
+            .recv_timeout(Duration::from_secs(5))
+            .expect("LLM was called");
+        assert!(request.contains("Rewrite it."), "{request}");
+        assert!(
+            request.contains("whisper on Hyprland 2026-10-29 09:41 <  board  >"),
+            "{request}"
+        );
+    }
+
+    #[test]
+    fn process_falls_back_to_the_processed_text_when_the_llm_fails() {
+        let mut cfg = config();
+        cfg.dictionary.corrections = entries(&[("wisper", "whisper")]);
+        cfg.snippets.entries = entries(&[("today", "{{DATE}}")]);
+        cfg.workflow = vec![workflow("chat", "Rewrite it.", &["kitty"])];
+        let pipeline = TextPipeline::new(&cfg, &VocabStrategy::Off);
+
+        let out = pipeline.process(
+            "wisper today".to_string(),
+            &ctx(None, Some("kitty")),
+            &FakeEnv::new(""),
+        );
+        assert_eq!(out, "whisper 2026-10-29");
+    }
+
+    #[test]
+    fn explicit_workflow_request_beats_the_window_class() {
+        let (base_url, request) = llm_replying("Dear team");
+        let mut cfg = config();
+        cfg.llm.base_url = base_url;
+        cfg.workflow = vec![
+            workflow("chat", "CHAT PROMPT", &["kitty"]),
+            workflow("email", "EMAIL PROMPT", &[]),
+        ];
+        let pipeline = TextPipeline::new(&cfg, &VocabStrategy::Off);
+
+        let out = pipeline.process(
+            "hello".to_string(),
+            &ctx(Some("Email"), Some("kitty")),
+            &FakeEnv::new(""),
+        );
+        assert_eq!(out, "Dear team");
+        let request = request
+            .recv_timeout(Duration::from_secs(5))
+            .expect("LLM was called");
+        assert!(request.contains("EMAIL PROMPT"), "{request}");
+        assert!(!request.contains("CHAT PROMPT"), "{request}");
+    }
+
+    #[test]
+    fn vocabulary_is_corrected_only_when_the_engine_asks_for_it() {
+        let mut cfg = config();
+        cfg.dictionary.vocabulary = vec!["Hyprland".to_string()];
+        let text = || "I use Hyperland".to_string();
+        let env = FakeEnv::new("");
+
+        let parakeet = TextPipeline::new(&cfg, &VocabStrategy::Correct);
+        assert_eq!(
+            parakeet.process(text(), &ctx(None, None), &env),
+            "I use Hyprland"
+        );
+
+        let whisper = TextPipeline::new(&cfg, &VocabStrategy::Prompt("Hyprland".to_string()));
+        assert_eq!(
+            whisper.process(text(), &ctx(None, None), &env),
+            "I use Hyperland"
+        );
+    }
+
+    #[test]
+    fn snippets_substitute_literal_triggers_and_keep_clipboard_whitespace() {
+        let mut cfg = config();
+        cfg.snippets.entries = entries(&[("brb", "be right back"), ("paste", "<{{CLIPBOARD}}>")]);
+        let pipeline = TextPipeline::new(&cfg, &VocabStrategy::Off);
+        let env = FakeEnv::new("  hi  ");
+
+        assert_eq!(
+            pipeline.process("brb".to_string(), &ctx(None, None), &env),
+            "be right back"
+        );
+        assert_eq!(
+            pipeline.process("paste".to_string(), &ctx(None, None), &env),
+            "<  hi  >"
+        );
+    }
+
+    #[test]
+    fn snippets_resolve_placeholders_only_for_present_triggers() {
+        let mut cfg = config();
+        cfg.snippets.entries =
+            entries(&[("paste", "<{{CLIPBOARD}}>"), ("stamp", "{{DATE}} {{TIME}}")]);
+        let pipeline = TextPipeline::new(&cfg, &VocabStrategy::Off);
+        let env = FakeEnv::new("secret");
+
+        assert_eq!(
+            pipeline.process("hello world".to_string(), &ctx(None, None), &env),
+            "hello world"
+        );
+        // A word merely containing a trigger doesn't count either.
+        assert_eq!(
+            pipeline.process("pasted stamps".to_string(), &ctx(None, None), &env),
+            "pasted stamps"
+        );
+        assert_eq!(
+            env.lookups.get(),
+            0,
+            "placeholder resolved for an absent trigger"
+        );
+    }
+
+    #[test]
+    fn snippets_prefer_the_longer_overlapping_trigger() {
+        // BTreeMap iterates "my email" before "my email address"; the longer
+        // trigger must still be consumed first.
+        let mut cfg = config();
+        cfg.snippets.entries = entries(&[("my email", "SHORT"), ("my email address", "LONG")]);
+        let pipeline = TextPipeline::new(&cfg, &VocabStrategy::Off);
+        let env = FakeEnv::new("");
+
+        assert_eq!(
+            pipeline.process("send my email address".to_string(), &ctx(None, None), &env),
+            "send LONG"
+        );
+        // The shorter trigger still works when the longer one cannot match.
+        assert_eq!(
+            pipeline.process("send my email".to_string(), &ctx(None, None), &env),
+            "send SHORT"
+        );
+    }
+
+    #[test]
+    fn live_env_formats_date_and_time() {
+        let desktop = crate::desktop::connect(crate::display::DisplayServer::Wayland);
+        let env = LiveEnv::new(desktop.as_ref());
+        let shape = |s: &str| {
+            s.chars()
+                .map(|c| if c.is_ascii_digit() { 'D' } else { c })
+                .collect::<String>()
+        };
+        assert_eq!(shape(&env.date()), "DDDD-DD-DD");
+        assert_eq!(shape(&env.time()), "DD:DD");
     }
 
     #[test]
@@ -370,116 +559,11 @@ mod tests {
     }
 
     #[test]
-    fn apply_corrections_applies_multiple_entries() {
-        let mut corrections = BTreeMap::new();
-        corrections.insert("wisper".to_string(), "whisper".to_string());
-        corrections.insert("hyprland".to_string(), "Hyprland".to_string());
-
-        let out = apply_corrections("wisper on hyprland", &corrections);
-        assert_eq!(out, "whisper on Hyprland");
-    }
-
-    #[test]
-    fn apply_corrections_empty_is_identity() {
-        let corrections = BTreeMap::new();
-        assert_eq!(apply_corrections("untouched", &corrections), "untouched");
-    }
-
-    #[test]
-    fn apply_snippets_substitutes_literal_trigger() {
-        let mut entries = BTreeMap::new();
-        entries.insert("brb".to_string(), "be right back".to_string());
-
-        assert_eq!(apply_snippets("brb", &entries, &stub("")), "be right back");
-    }
-
-    #[test]
-    fn apply_snippets_skips_placeholders_of_absent_triggers() {
-        let mut entries = BTreeMap::new();
-        entries.insert("paste".to_string(), "<{{CLIPBOARD}}>".to_string());
-
-        let backend = stub("secret");
-        assert_eq!(
-            apply_snippets("hello world", &entries, &backend),
-            "hello world"
-        );
-        assert_eq!(
-            backend.reads.load(std::sync::atomic::Ordering::Relaxed),
-            0,
-            "clipboard read for an absent trigger"
-        );
-        // A word merely containing the trigger doesn't count either.
-        assert_eq!(apply_snippets("pasted", &entries, &backend), "pasted");
-        assert_eq!(backend.reads.load(std::sync::atomic::Ordering::Relaxed), 0);
-    }
-
-    #[test]
     fn contains_phrase_ci_matches_whole_words_only() {
         assert!(contains_phrase_ci("Please PASTE here", "paste"));
         assert!(contains_phrase_ci("send my email now", "my email"));
         assert!(!contains_phrase_ci("pasted", "paste"));
         assert!(!contains_phrase_ci("anything", ""));
-    }
-
-    #[test]
-    fn apply_snippets_resolves_clipboard_placeholder_via_backend() {
-        let mut entries = BTreeMap::new();
-        entries.insert("paste".to_string(), "<{{CLIPBOARD}}>".to_string());
-
-        // The placeholder is filled from the backend; whitespace is preserved (no trim).
-        assert_eq!(
-            apply_snippets("paste", &entries, &stub("  hi  ")),
-            "<  hi  >"
-        );
-    }
-
-    #[test]
-    fn apply_snippets_prefers_longer_overlapping_trigger() {
-        // Both triggers could match the prefix; the longer one must win.
-        let mut entries = BTreeMap::new();
-        entries.insert("my email".to_string(), "SHORT".to_string());
-        entries.insert("my email address".to_string(), "LONG".to_string());
-
-        // BTreeMap iterates "my email" before "my email address"; sorting by length
-        // descending ensures the longer trigger is consumed first.
-        assert_eq!(
-            apply_snippets("send my email address", &entries, &stub("")),
-            "send LONG"
-        );
-        // The shorter trigger still works when the longer one cannot match.
-        assert_eq!(
-            apply_snippets("send my email", &entries, &stub("")),
-            "send SHORT"
-        );
-    }
-
-    #[test]
-    fn focused_node_finds_focused_app_id_in_sway_tree() {
-        let tree = serde_json::json!({
-            "focused": false,
-            "nodes": [
-                {
-                    "focused": false,
-                    "nodes": [
-                        { "focused": true, "app_id": "firefox" }
-                    ],
-                    "floating_nodes": []
-                }
-            ],
-            "floating_nodes": []
-        });
-        let node = focused_node(&tree).expect("a focused node exists");
-        assert_eq!(node.get("app_id").and_then(|v| v.as_str()), Some("firefox"));
-    }
-
-    #[test]
-    fn focused_node_returns_none_when_nothing_focused() {
-        let tree = serde_json::json!({
-            "focused": false,
-            "nodes": [{ "focused": false, "nodes": [], "floating_nodes": [] }],
-            "floating_nodes": []
-        });
-        assert!(focused_node(&tree).is_none());
     }
 
     #[test]
