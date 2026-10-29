@@ -92,7 +92,8 @@ Cargo workspace (`resolver = "3"`, `edition = "2024"`, MSRV `rust-version = 1.88
 | `state.rs` | `StatePublisher` writes `state.json` atomically (tmp + rename); `Status` keeps in-memory + on-disk snapshot in sync and flashes transient states. |
 | `config.rs` | TOML config; built-in defaults embedded via `include_str!`; `Config::validate` rejects bad config at startup. |
 | `setup.rs` | `whispy-daemon setup` — idempotent one-shot bootstrap (install the STT engine: `whispy-stt` via cargo or whisper.cpp build; fetch + verify its model; ydotool perms, seed config, install systemd unit, opt-in Quickshell), then prints keybinds for the detected config (`HyprConfig`: Omarchy 4 Lua / Omarchy 3 / Hyprland Lua / hyprlang). |
-| `stats.rs` | `whispy-daemon stats` — read-only summary of `transcripts.jsonl` (accepted vs dropped by reason) for filter tuning. |
+| `transcripts.rs` | `TranscriptLog` — the transcript log (`transcripts.jsonl`): owns the `Record` shape, its location, size-capped rotation, appending, and reading both generations oldest first (`read`, `newest(n)`). The only code that touches the file. |
+| `stats.rs` | `whispy-daemon stats` — read-only summary of the transcript log (accepted vs dropped by reason) for filter tuning. |
 | `settings/` | `whispy-daemon settings` — ratatui settings TUI (microphone + level meter + test dictation, language, typing, auto-stop, history). `form.rs` is the pure, tested screen state; `store.rs` edits `config.toml` with `toml_edit` so comments survive; `mic.rs` reuses `audio::Recorder` so the meter/test hear what dictation hears. Terminal palette colors only, so it follows the Omarchy theme. |
 
 ## IPC protocol
@@ -119,7 +120,7 @@ on it, and the QML pill reads the `state.json` shape.
 - Logs: JSON lines to `$XDG_STATE_HOME/whispy/daemon.log`; level via `RUST_LOG`
   (default `info`). whisper-server output goes to `whisper-server.log` in the state dir.
   Both logs and `transcripts.jsonl` are size-capped via `config::rotate_if_larger`
-  (one `.1` generation); `stats` reads both generations.
+  (one `.1` generation); `transcripts.rs` reads both generations for `stats` and History.
 
 If you add a config field, update both the struct in `config.rs` and
 `config/default.toml` (with an explanatory comment), and keep `#[serde(default)]`

@@ -1,25 +1,14 @@
 //! `whispy-daemon stats`: summarize `transcripts.jsonl` so users can tune the
 //! filter thresholds (`fuzzy_ratio`, confidence bounds) without hand-parsing the log.
 //!
-//! `App::log_transcript` (app.rs) appends one JSON record per clip — accepted or
-//! dropped, with the drop reason and confidence signals. This reads that file and
-//! prints how many clips were accepted vs dropped, broken down by drop reason.
+//! The daemon appends one [`Record`] per clip to the [`TranscriptLog`] — accepted
+//! or dropped, with the drop reason and confidence signals. This reads it back
+//! (both generations) and prints how many clips were accepted vs dropped, broken
+//! down by drop reason.
 
-use std::io::{BufRead, BufReader};
 use std::process::ExitCode;
 
-use crate::config;
-
-/// One parsed line of `transcripts.jsonl` (only the fields we summarize).
-#[derive(serde::Deserialize)]
-struct Record {
-    #[serde(default)]
-    accepted: bool,
-    #[serde(default)]
-    drop_reason: Option<String>,
-    #[serde(default)]
-    avg_logprob: f32,
-}
+use crate::transcripts::{Record, TranscriptLog};
 
 /// Aggregate counts over a run of records.
 #[derive(Debug, Default, PartialEq)]
@@ -32,18 +21,11 @@ pub struct Summary {
     pub mean_accepted_logprob: f32,
 }
 
-/// Fold a stream of JSONL lines into a [`Summary`]. Malformed lines are skipped.
-pub fn summarize(lines: impl Iterator<Item = String>) -> Summary {
+/// Fold transcript records into a [`Summary`].
+pub fn summarize(records: impl IntoIterator<Item = Record>) -> Summary {
     let mut s = Summary::default();
     let mut logprob_sum = 0.0f64;
-    for line in lines {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(rec) = serde_json::from_str::<Record>(line) else {
-            continue;
-        };
+    for rec in records {
         s.total += 1;
         if rec.accepted {
             s.accepted += 1;
@@ -64,26 +46,18 @@ pub fn summarize(lines: impl Iterator<Item = String>) -> Summary {
     s
 }
 
-/// Read `transcripts.jsonl` (and its rotated `.1` generation, oldest first) from
-/// the state dir and print the summary.
+/// Read the daemon's transcript log (both generations) and print the summary.
 pub fn run() -> ExitCode {
-    let path = config::state_dir().join("transcripts.jsonl");
-    let files: Vec<std::fs::File> = [config::rotated(&path), path.clone()]
-        .iter()
-        .filter_map(|p| std::fs::File::open(p).ok())
-        .collect();
-    if files.is_empty() {
+    let log = TranscriptLog::open();
+    let path = log.path();
+    let Some(records) = log.read() else {
         eprintln!(
             "whispy-daemon stats: no transcript log at {}",
             path.display()
         );
         return ExitCode::FAILURE;
-    }
-
-    let lines = files
-        .into_iter()
-        .flat_map(|f| BufReader::new(f).lines().map_while(Result::ok));
-    let s = summarize(lines);
+    };
+    let s = summarize(records);
 
     println!("transcripts: {}  ({})", s.total, path.display());
     let pct = |n: usize| {
@@ -116,18 +90,23 @@ pub fn run() -> ExitCode {
 mod tests {
     use super::*;
 
-    fn lines(raw: &[&str]) -> Summary {
-        summarize(raw.iter().map(ToString::to_string))
+    fn rec(accepted: bool, drop_reason: Option<&str>, avg_logprob: f32) -> Record {
+        Record {
+            accepted,
+            drop_reason: drop_reason.map(String::from),
+            avg_logprob,
+            ..Record::default()
+        }
     }
 
     #[test]
     fn counts_accepted_and_groups_drop_reasons() {
-        let s = lines(&[
-            r#"{"accepted":true,"drop_reason":null,"avg_logprob":-0.2}"#,
-            r#"{"accepted":true,"drop_reason":null,"avg_logprob":-0.4}"#,
-            r#"{"accepted":false,"drop_reason":"low_confidence"}"#,
-            r#"{"accepted":false,"drop_reason":"hallucination"}"#,
-            r#"{"accepted":false,"drop_reason":"low_confidence"}"#,
+        let s = summarize([
+            rec(true, None, -0.2),
+            rec(true, None, -0.4),
+            rec(false, Some("low_confidence"), 0.0),
+            rec(false, Some("hallucination"), 0.0),
+            rec(false, Some("low_confidence"), 0.0),
         ]);
         assert_eq!(s.total, 5);
         assert_eq!(s.accepted, 2);
@@ -137,25 +116,33 @@ mod tests {
     }
 
     #[test]
-    fn skips_blank_and_malformed_lines() {
-        let s = lines(&[
-            "",
-            "   ",
-            "not json",
-            r#"{"accepted":true,"drop_reason":null,"avg_logprob":-0.1}"#,
-        ]);
-        assert_eq!(s.total, 1);
-        assert_eq!(s.accepted, 1);
-    }
-
-    #[test]
     fn dropped_without_reason_falls_back_to_unknown() {
-        let s = lines(&[r#"{"accepted":false}"#]);
+        let s = summarize([rec(false, None, 0.0)]);
         assert_eq!(s.dropped.get("unknown"), Some(&1));
     }
 
     #[test]
     fn empty_input_is_all_zero() {
-        assert_eq!(lines(&[]), Summary::default());
+        assert_eq!(summarize([]), Summary::default());
+    }
+
+    #[test]
+    fn summarizes_a_log_across_both_generations() {
+        let dir = std::env::temp_dir().join(format!("whispy-stats-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = TranscriptLog::in_dir(&dir);
+        std::fs::write(
+            crate::config::rotated(log.path()),
+            "{\"accepted\":true,\"drop_reason\":null,\"avg_logprob\":-0.1}\nnot json\n",
+        )
+        .unwrap();
+        log.append(&rec(false, Some("empty"), 0.0)).unwrap();
+
+        let s = summarize(log.read().unwrap());
+        assert_eq!(s.total, 2);
+        assert_eq!(s.accepted, 1);
+        assert_eq!(s.dropped.get("empty"), Some(&1));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

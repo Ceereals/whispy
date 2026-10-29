@@ -13,7 +13,6 @@ mod sources;
 mod store;
 mod ui;
 
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::sync::mpsc::{self, Receiver};
@@ -26,6 +25,7 @@ use crate::config::{self, Config};
 use crate::engine::Engine;
 use crate::proc;
 use crate::stt::SttClient;
+use crate::transcripts::TranscriptLog;
 use form::{Body, Choice, Effect, Form, HistoryEntry, Input, Section, SectionKey};
 use mic::Mic;
 use store::Values;
@@ -379,54 +379,22 @@ fn radio(
     }
 }
 
-/// The newest transcripts from `transcripts.jsonl`, newest first.
+/// The newest transcripts from the transcript log, newest first.
 fn load_history() -> Vec<HistoryEntry> {
-    let path = config::state_dir().join("transcripts.jsonl");
-    let Ok(file) = std::fs::File::open(path) else {
-        return Vec::new();
-    };
-    parse_history(
-        BufReader::new(file).lines().map_while(Result::ok),
-        HISTORY_LEN,
-    )
-}
-
-/// Parse transcript-log lines into the newest `limit` entries, newest first.
-fn parse_history(lines: impl Iterator<Item = String>, limit: usize) -> Vec<HistoryEntry> {
-    let mut entries: Vec<HistoryEntry> = lines
-        .filter_map(|line| {
-            let v: serde_json::Value = serde_json::from_str(&line).ok()?;
-            Some(HistoryEntry {
-                accepted: v["accepted"].as_bool().unwrap_or(false),
-                reason: v["drop_reason"].as_str().map(String::from),
-                text: v["text"].as_str().unwrap_or_default().trim().to_string(),
-            })
+    TranscriptLog::open()
+        .newest(HISTORY_LEN)
+        .into_iter()
+        .map(|r| HistoryEntry {
+            accepted: r.accepted,
+            reason: r.drop_reason,
+            text: r.text.trim().to_string(),
         })
-        .collect();
-    entries.reverse();
-    entries.truncate(limit);
-    entries
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn history_is_newest_first_and_capped() {
-        let lines = [
-            r#"{"accepted":true,"text":" old "}"#,
-            "not json",
-            r#"{"accepted":false,"drop_reason":"hallucination","text":"Grazie."}"#,
-            r#"{"accepted":true,"text":"new"}"#,
-        ]
-        .map(String::from);
-        let h = parse_history(lines.into_iter(), 2);
-        assert_eq!(h.len(), 2);
-        assert_eq!(h[0].text, "new");
-        assert_eq!(h[1].reason.as_deref(), Some("hallucination"));
-        assert!(!h[1].accepted);
-    }
 
     #[test]
     fn radio_keeps_an_unknown_current_value() {

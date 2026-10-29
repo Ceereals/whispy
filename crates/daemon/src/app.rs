@@ -11,13 +11,14 @@ use tracing::{info, warn};
 use whispy_common::{Cmd, Resp};
 
 use crate::audio::{Capture, Recorder};
-use crate::config::{self, Config};
+use crate::config::Config;
 use crate::display::DisplayServer;
 use crate::filter::{self, Decision, Hallucinations, Metrics};
 use crate::inject::Injector;
 use crate::pipeline::{self, AppContext};
-use crate::state::{Status, now};
+use crate::state::Status;
 use crate::stt::{SttClient, Transcription};
+use crate::transcripts::{Record, TranscriptLog};
 
 /// One recording in progress: the live capture plus what its transcript needs for
 /// post-processing (the workflow the hotkey asked for and the window that was
@@ -269,33 +270,10 @@ fn should_notify(mode: &str, server: DisplayServer) -> bool {
     }
 }
 
-/// Append one transcription record (accepted or dropped) to `transcripts.jsonl`
-/// under `$XDG_STATE_HOME/whispy`, for offline calibration of the filter. The file
-/// holds dictated text, so it is capped: past [`config::TRANSCRIPTS_MAX_BYTES`] it
-/// rotates to `transcripts.jsonl.1`, replacing the older generation.
+/// Append one transcription record (accepted or dropped) to the
+/// [`TranscriptLog`], for offline calibration of the filter. Best-effort.
 fn log_transcript(t: &Transcription, drop_reason: Option<&str>) {
-    use std::io::Write;
-
-    let record = serde_json::json!({
-        "timestamp": now(),
-        "text": t.text,
-        "accepted": drop_reason.is_none(),
-        "drop_reason": drop_reason,
-        "avg_logprob": t.avg_logprob,
-        "no_speech_prob": t.no_speech_prob,
-        "language": t.language,
-    });
-
-    let path = config::state_dir().join("transcripts.jsonl");
-    if let Err(e) = config::rotate_if_larger(&path, config::TRANSCRIPTS_MAX_BYTES) {
-        warn!(error = %e, "failed to rotate transcript log");
-    }
-    let result = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .and_then(|mut f| writeln!(f, "{record}"));
-    if let Err(e) = result {
+    if let Err(e) = TranscriptLog::open().append(&Record::new(t, drop_reason)) {
         warn!(error = %e, "failed to log transcript");
     }
 }
