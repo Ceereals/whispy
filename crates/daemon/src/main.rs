@@ -21,6 +21,7 @@ mod state;
 mod stats;
 mod stt;
 mod stt_server;
+mod transcripts;
 mod vocab;
 
 use std::path::PathBuf;

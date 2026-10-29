@@ -22,6 +22,12 @@ the `verbose_json` subset it gets back (`text`, `detected_language`,
 `segments[].text/avg_logprob/no_speech_prob`). whispy-stt and whisper.cpp's
 whisper-server both speak it. See `crates/common/src/inference.rs`.
 
+**Transcript log** — `transcripts.jsonl` in the state dir: one record per
+transcribed clip, accepted or dropped (with the drop reason and confidence
+signals), kept for filter calibration and shown by `stats` and the settings
+History tab. Size-capped with one rotated `.1` generation; readers see both.
+See `crates/daemon/src/transcripts.rs`.
+
 **Vocabulary correction** — the fuzzy, after-the-fact rewrite of a transcript
 against `dictionary.vocabulary`, for engines that can't take the vocabulary as a
 decoding prompt (Parakeet). Misheard spellings of a custom word ("Hyperland",
