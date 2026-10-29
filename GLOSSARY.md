@@ -2,6 +2,11 @@
 
 Terms used in whispy's code, config, and docs.
 
+**Desktop** — the display server as the daemon sees it: the focused window's
+class, the clipboard, and typing into the focused window. One adapter per
+display server (Wayland, X11), chosen from `injection.backend` and the session
+environment. See `crates/daemon/src/desktop.rs`.
+
 **Engine** — the speech-to-text engine chosen by `stt.engine`: `whisper`
 (whisper.cpp's whisper-server) or `parakeet` (NVIDIA Parakeet via `whispy-stt` on
 transcribe.cpp). The daemon runs it as a supervised STT server behind the same

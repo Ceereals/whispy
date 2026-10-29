@@ -12,10 +12,11 @@ use whispy_common::{Cmd, Resp};
 
 use crate::audio::{Capture, Recorder};
 use crate::config::{self, Config};
+use crate::desktop::{self, Desktop};
 use crate::display::DisplayServer;
 use crate::filter::{self, Decision, Hallucinations, Metrics};
 use crate::inject::Injector;
-use crate::pipeline::{self, AppContext};
+use crate::pipeline::{AppContext, LiveEnv, TextPipeline};
 use crate::state::{Status, now};
 use crate::stt::{SttClient, Transcription};
 
@@ -36,7 +37,11 @@ pub struct App {
     stt: Arc<SttClient>,
     blacklist: Arc<Hallucinations>,
     injector: Injector,
-    /// Resolved display server: drives window-class detection and notify gating.
+    /// The display server's window-class probe, clipboard and typing.
+    desktop: Arc<dyn Desktop>,
+    /// Post-transcription text pipeline, prepared at startup.
+    pipeline: TextPipeline,
+    /// Resolved display server: drives notify gating.
     server: DisplayServer,
     session: Mutex<Option<Session>>,
     /// Serializes post-processing + injection across transcribe threads: a new
@@ -52,9 +57,11 @@ impl App {
         stt: SttClient,
         blacklist: Hallucinations,
         server: DisplayServer,
+        pipeline: TextPipeline,
     ) -> Self {
         let recorder = Recorder::new(cfg.audio.clone());
-        let injector = Injector::new(&cfg.injection, server);
+        let desktop = desktop::connect(server);
+        let injector = Injector::new(&cfg.injection, Arc::clone(&desktop));
         Self {
             cfg,
             status,
@@ -62,6 +69,8 @@ impl App {
             stt: Arc::new(stt),
             blacklist: Arc::new(blacklist),
             injector,
+            desktop,
+            pipeline,
             server,
             session: Mutex::new(None),
             inject_lock: Mutex::new(()),
@@ -123,7 +132,7 @@ impl App {
                 // the transcript will be post-processed for and pasted into.
                 let ctx = AppContext {
                     workflow,
-                    window_class: pipeline::active_window_class(self.server),
+                    window_class: self.desktop.window_class(),
                 };
                 *slot = Some(Session { capture, ctx });
                 info!("recording started");
@@ -223,7 +232,8 @@ impl App {
                 // Held through injection so overlapping clips paste one at a time,
                 // in order.
                 let _inject = self.inject_lock.lock().expect("inject lock");
-                let text = pipeline::process(text, &self.cfg, &ctx, self.injector.backend());
+                let env = LiveEnv::new(self.desktop.as_ref());
+                let text = self.pipeline.process(text, &ctx, &env);
                 info!(chars = text.len(), lang = ?transcription.language, "transcript accepted");
                 match self.injector.inject(&text) {
                     Ok(()) => self.status.success(),

@@ -58,7 +58,7 @@ Hyprland keybind ──► whispy-client ──(unix socket)──► whispy-dae
 
 `start` → open PipeWire capture → on `stop`, transcription runs off-thread (client
 returns immediately, UI follows `state.json`) → hallucination filter →
-`pipeline::process` (vocabulary fuzzy-fix on Parakeet, corrections, snippets, AI workflow) → inject → flash
+`TextPipeline::process` (vocabulary fuzzy-fix on Parakeet, corrections, snippets, AI workflow) → inject → flash
 `success`/`error` and revert to `idle`.
 
 ## Workspace layout
@@ -85,10 +85,11 @@ Cargo workspace (`resolver = "3"`, `edition = "2024"`, MSRV `rust-version = 1.88
 | `vocab.rs` | Fuzzy custom-vocabulary correction (Levenshtein + Soundex over 1–3 word windows, ported from Handy) for Parakeet, which can't take whisper's prompt bias. |
 | `stt.rs` | HTTP client to the STT server's `/inference` (multipart WAV, `verbose_json`); parses transcript + confidence signals. |
 | `filter.rs` | Hallucination filter: confidence thresholds → punctuation-only rejection → exact + fuzzy (`strsim`) blacklist match. |
-| `pipeline.rs` | Post-transcription text pipeline: corrections → snippets → AI workflow selection + LLM transform. Never fails (falls back to raw text). |
+| `pipeline.rs` | `TextPipeline`, prepared once at startup from `Config` + the engine's `VocabStrategy`: vocabulary correction (Parakeet) → corrections → snippets → AI workflow selection + LLM transform. Never fails (falls back to raw text). Placeholders come from a narrow `PlaceholderEnv` (`LiveEnv`: desktop clipboard + `date`; a fake in tests). |
 | `llm.rs` | Minimal OpenAI-compatible chat client (local ollama by default) for AI workflows. |
 | `proc.rs` | Deadline-bounded subprocess helpers (`output`/`status`/`with_stdin`) used for every runtime tool call (clipboard, typing, `ydotool`, window-class probes) so a wedged tool can't hang a thread. |
-| `inject.rs` | Text injection: `paste` mode (`wl-copy` + `ydotool` Ctrl+V, clipboard save/restore) or `type` mode (`wtype`). |
+| `desktop.rs` | The `Desktop` seam: focused window class, clipboard (top MIME, read, copy, clear, as text) and typing, with a Wayland adapter (`hyprctl`/`swaymsg`, `wl-copy`/`wl-paste`, `wtype`) and an X11 one (`xdotool`, `xclip`/`xsel`); `desktop::connect(server)` picks it. |
+| `inject.rs` | Text injection over the `Desktop`: `paste` mode (clipboard save/restore + portable `ydotool` Ctrl+V) or `type` mode (the desktop's typing). |
 | `state.rs` | `StatePublisher` writes `state.json` atomically (tmp + rename); `Status` keeps in-memory + on-disk snapshot in sync and flashes transient states. |
 | `config.rs` | TOML config; built-in defaults embedded via `include_str!`; `Config::validate` rejects bad config at startup. |
 | `setup.rs` | `whispy-daemon setup` — idempotent one-shot bootstrap (install the STT engine: `whispy-stt` via cargo or whisper.cpp build; fetch + verify its model; ydotool perms, seed config, install systemd unit, opt-in Quickshell), then prints keybinds for the detected config (`HyprConfig`: Omarchy 4 Lua / Omarchy 3 / Hyprland Lua / hyprlang). |
