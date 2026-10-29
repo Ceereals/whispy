@@ -2,6 +2,12 @@
 
 Terms used in whispy's code, config, and docs.
 
+**Editable setting** — a config value the settings screen (`whispy-daemon
+settings`) changes: microphone, engine, language, typing mode, auto-stop. Each is
+declared once with its `[table] key`, its options, and how it is read from the
+config and written back into `config.toml` (comments kept). See
+`crates/daemon/src/settings/editable.rs`.
+
 **Engine** — the speech-to-text engine chosen by `stt.engine`: `whisper`
 (whisper.cpp's whisper-server) or `parakeet` (NVIDIA Parakeet via `whispy-stt` on
 transcribe.cpp). The daemon runs it as a supervised STT server behind the same

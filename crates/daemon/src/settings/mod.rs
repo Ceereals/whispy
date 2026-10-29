@@ -2,15 +2,15 @@
 //! (with a live level meter and a test dictation), speech engine, language,
 //! typing mode, and the silence auto-stop — plus the recent transcript history.
 //!
-//! It edits the user's `config.toml` in place (comments kept, see [`store`]) and
+//! It edits the user's `config.toml` in place (comments kept, see [`editable`]) and
 //! restarts the daemon on save, since the daemon reads its config only at start.
 //! Meant to run in a floating terminal, like Omarchy's own TUIs:
 //! `omarchy-launch-or-focus-tui --app-id=TUI.float whispy-daemon settings`.
 
+mod editable;
 mod form;
 mod mic;
 mod sources;
-mod store;
 mod ui;
 
 use std::io::{BufRead, BufReader};
@@ -22,13 +22,11 @@ use std::time::Duration;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use crate::config::{self, Config, ConfigChoice, InjectMode};
-use crate::engine::Engine;
+use crate::config::{self, Config};
 use crate::proc;
 use crate::stt::SttClient;
-use form::{Body, Choice, Effect, Form, HistoryEntry, Input, Section, SectionKey};
+use form::{Body, Effect, Form, HistoryEntry, Input, Section, SectionKey};
 use mic::Mic;
-use store::Values;
 
 /// Redraw cadence (also how often the meter updates).
 const TICK: Duration = Duration::from_millis(50);
@@ -81,8 +79,15 @@ struct App {
 
 impl App {
     fn new(cfg: Config, path: PathBuf) -> Self {
-        let values = Values::from_config(&cfg);
-        let form = Form::new(build_sections(&values));
+        let (sources, default_source) = sources::list();
+        let mut sections = editable::sections(&cfg, &sources, default_source.as_deref());
+        sections.push(Section {
+            key: SectionKey::History,
+            title: "History",
+            hint: "Latest dictations: ✓ typed, ✗ dropped by the filter (with the reason).",
+            body: Body::History(Vec::new()),
+        });
+        let form = Form::new(sections);
         let mic = Mic::new(cfg.audio.clone());
         Self {
             cfg,
@@ -170,37 +175,8 @@ impl App {
         }
     }
 
-    fn values(&self) -> Values {
-        let get = |key| self.form.value(key).unwrap_or_default().to_string();
-        Values {
-            source: get(SectionKey::Microphone),
-            language: get(SectionKey::Language),
-            mode: InjectMode::parse(&get(SectionKey::Typing)).unwrap_or_default(),
-            silence_timeout_ms: get(SectionKey::AutoStop).parse().unwrap_or(0),
-            engine: Engine::parse(&get(SectionKey::Engine)).unwrap_or_default(),
-        }
-    }
-
-    /// The daemon config these settings would produce, validated like the daemon
-    /// does at start: a missing engine binary or model must not be saved, or the
-    /// restart would leave whispy down.
-    fn check(&self, values: &Values) -> Result<(), String> {
-        let mut cfg = self.cfg.clone();
-        cfg.audio.source.clone_from(&values.source);
-        cfg.stt.language.clone_from(&values.language);
-        cfg.injection.mode = values.mode;
-        cfg.audio.silence_timeout_ms = values.silence_timeout_ms;
-        cfg.stt.engine = values.engine;
-        cfg.validate()
-    }
-
     fn save(&mut self) {
-        let values = self.values();
-        if let Err(e) = self.check(&values) {
-            self.status = Some(format!("✗ Not saved: {e}"));
-            return;
-        }
-        if let Err(e) = store::save(&self.path, &values) {
+        if let Err(e) = editable::save(&self.path, &self.form) {
             self.status = Some(format!("✗ Not saved: {e}"));
             return;
         }
@@ -238,7 +214,9 @@ impl App {
             return;
         };
         let mut stt = self.cfg.stt.clone();
-        stt.language = self.values().language;
+        if let Some(language) = self.form.value(SectionKey::Language) {
+            stt.language = language.to_string();
+        }
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let msg = match SttClient::new(&stt, None).transcribe(&samples) {
@@ -271,120 +249,6 @@ fn decode(key: KeyEvent) -> Option<Input> {
         KeyCode::Char('t') => Input::Test,
         _ => return None,
     })
-}
-
-/// The screen's sections, with `values` chosen.
-fn build_sections(values: &Values) -> Vec<Section> {
-    let (sources, default) = sources::list();
-    let (mic_choices, mic_chosen) =
-        sources::microphone_choices(&sources, default.as_deref(), &values.source);
-    vec![
-        Section {
-            key: SectionKey::Microphone,
-            title: "Microphone",
-            hint: "Where dictation records from. The meter follows the highlighted one.",
-            body: Body::Radio {
-                choices: mic_choices,
-                chosen: mic_chosen,
-            },
-        },
-        radio(
-            SectionKey::Engine,
-            "Engine",
-            "The speech-to-text model. Switching needs it installed: whispy-daemon setup.",
-            &[
-                (
-                    "Parakeet",
-                    Engine::Parakeet.as_str(),
-                    "fastest, punctuates well, no text on silence · 25 European languages",
-                ),
-                (
-                    "Whisper",
-                    Engine::Whisper.as_str(),
-                    "~100 languages · vocabulary as a decoding prompt",
-                ),
-            ],
-            values.engine.as_str(),
-        ),
-        radio(
-            SectionKey::Language,
-            "Language",
-            "Automatic detects the language of each dictation, so you can switch freely.",
-            &[
-                ("Automatic", "auto", "detected per dictation"),
-                ("Italiano", "it", ""),
-                ("English", "en", ""),
-                ("Español", "es", ""),
-                ("Français", "fr", ""),
-                ("Deutsch", "de", ""),
-                ("Português", "pt", ""),
-            ],
-            &values.language,
-        ),
-        radio(
-            SectionKey::Typing,
-            "Typing",
-            "How the transcript reaches the focused window.",
-            &[
-                (
-                    "Type",
-                    InjectMode::Type.as_str(),
-                    "wtype types it; works in terminals",
-                ),
-                (
-                    "Paste",
-                    InjectMode::Paste.as_str(),
-                    "clipboard + Ctrl+V; needs ydotoold",
-                ),
-            ],
-            values.mode.as_str(),
-        ),
-        radio(
-            SectionKey::AutoStop,
-            "Auto-stop",
-            "After you stop talking, stop recording and transcribe after this much silence.",
-            &[
-                ("Off", "0", "stop only with the key"),
-                ("1 s", "1000", ""),
-                ("1.5 s", "1500", ""),
-                ("2 s", "2000", ""),
-                ("3 s", "3000", ""),
-                ("5 s", "5000", ""),
-            ],
-            &values.silence_timeout_ms.to_string(),
-        ),
-        Section {
-            key: SectionKey::History,
-            title: "History",
-            hint: "Latest dictations: ✓ typed, ✗ dropped by the filter (with the reason).",
-            body: Body::History(Vec::new()),
-        },
-    ]
-}
-
-/// A radio section over fixed options; a current value outside them is kept as an
-/// extra option so opening the screen never changes the config by itself.
-fn radio(
-    key: SectionKey,
-    title: &'static str,
-    hint: &'static str,
-    options: &[(&str, &str, &str)],
-    current: &str,
-) -> Section {
-    let mut choices: Vec<Choice> = options
-        .iter()
-        .map(|(label, value, detail)| Choice::new(*label, *value, *detail))
-        .collect();
-    if !choices.iter().any(|c| c.value == current) {
-        choices.push(Choice::new(current, current, "current"));
-    }
-    let chosen = choices.iter().position(|c| c.value == current).unwrap_or(0);
-    Section {
-        key,
-        title,
-        hint,
-        body: Body::Radio { choices, chosen },
-    }
 }
 
 /// The newest transcripts from `transcripts.jsonl`, newest first.
@@ -434,15 +298,6 @@ mod tests {
         assert_eq!(h[0].text, "new");
         assert_eq!(h[1].reason.as_deref(), Some("hallucination"));
         assert!(!h[1].accepted);
-    }
-
-    #[test]
-    fn radio_keeps_an_unknown_current_value() {
-        let s = radio(SectionKey::Language, "L", "", &[("Auto", "auto", "")], "ja");
-        let Body::Radio { choices, chosen } = s.body else {
-            panic!("radio body");
-        };
-        assert_eq!(choices[chosen].value, "ja");
     }
 
     #[test]
