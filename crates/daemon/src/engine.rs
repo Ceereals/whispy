@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use crate::config::{Stt, expand};
+use crate::config::{ConfigChoice, Stt, expand};
 
 /// The STT engine. Configs written before `stt.engine` existed are [`Engine::Whisper`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -54,23 +54,18 @@ const PARAKEET_MODEL_URL: &str = "https://huggingface.co/handy-computer/parakeet
 const PARAKEET_MODEL_SHA256: &str =
     "007a59761e9258779f189df396b50d12b83bb5b79e66df4b955c230d2f2a0a59";
 
-impl Engine {
-    /// Every engine, in the order the settings screen lists them.
-    pub const ALL: [Self; 2] = [Self::Parakeet, Self::Whisper];
+impl ConfigChoice for Engine {
+    const ALL: &'static [Self] = &[Self::Parakeet, Self::Whisper];
 
-    /// The `stt.engine` config value.
-    pub fn as_str(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             Self::Whisper => "whisper",
             Self::Parakeet => "parakeet",
         }
     }
+}
 
-    /// Parse an `stt.engine` value.
-    pub fn parse(value: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|e| e.as_str() == value)
-    }
-
+impl Engine {
     /// The STT server program's name, for logs and messages.
     pub fn server_name(self) -> &'static str {
         match self {
@@ -109,7 +104,7 @@ impl Engine {
     pub fn extra_server_args(self, stt: &Stt) -> Vec<String> {
         match self {
             Self::Whisper => Vec::new(),
-            Self::Parakeet => vec!["--backend".to_string(), stt.backend.clone()],
+            Self::Parakeet => vec!["--backend".to_string(), stt.backend.as_str().to_string()],
         }
     }
 
@@ -178,7 +173,7 @@ mod tests {
 
     #[test]
     fn config_values_round_trip() {
-        for e in Engine::ALL {
+        for &e in Engine::ALL {
             assert_eq!(Engine::parse(e.as_str()), Some(e));
             assert_eq!(e.to_string(), e.as_str());
         }

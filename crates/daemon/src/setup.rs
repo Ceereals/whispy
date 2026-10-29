@@ -18,8 +18,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
 
-use crate::config::{self, Config};
-use crate::display::{self, Backend, DisplayServer};
+use crate::config::{self, ComputeBackend, Config, InjectMode};
+use crate::display::{self, DisplayServer};
 use crate::engine::{Engine, ModelSource};
 
 #[derive(clap::Args, Debug)]
@@ -125,8 +125,7 @@ fn full(cfg: &Config, args: &SetupArgs) -> Result<(), String> {
     }
     // The Quickshell pill needs wlr-layer-shell, which X11 doesn't provide — skip
     // it there and rely on desktop notifications (ui.notify) instead.
-    let server = display::resolve_from_env(Backend::parse(&cfg.injection.backend))
-        .unwrap_or(DisplayServer::Wayland);
+    let server = display::resolve_from_env(cfg.injection.backend).unwrap_or(DisplayServer::Wayland);
     if server == DisplayServer::X11 {
         println!(
             "\n==> Quickshell pill: skipped on X11 (layer-shell only); \
@@ -152,18 +151,17 @@ fn doctor(cfg: &Config) {
 
     // Resolve the display server the same way the daemon does at startup, so the
     // tool list matches what dictation will actually drive.
-    let server =
-        display::resolve_from_env(Backend::parse(&cfg.injection.backend)).unwrap_or_else(|| {
-            println!("  (could not detect display server; assuming Wayland)");
-            DisplayServer::Wayland
-        });
+    let server = display::resolve_from_env(cfg.injection.backend).unwrap_or_else(|| {
+        println!("  (could not detect display server; assuming Wayland)");
+        DisplayServer::Wayland
+    });
     println!("  display server: {}", server_label(server));
     if server == DisplayServer::Wayland && have("hyprctl") {
         println!("  hyprland config: {}", HyprConfig::detect().label());
     }
 
     println!("  runtime:");
-    for (cmd, note) in required_tools(server, &cfg.injection.mode) {
+    for (cmd, note) in required_tools(server, cfg.injection.mode) {
         report(cmd, note, have(cmd));
     }
 
@@ -234,8 +232,11 @@ fn server_label(server: DisplayServer) -> &'static str {
 ///
 /// On X11 the clipboard requirement is "either xclip or xsel"; we list `xclip`
 /// (the preferred one) so a single missing-tool warning points at the default.
-pub fn required_tools(server: DisplayServer, mode: &str) -> Vec<(&'static str, &'static str)> {
-    let type_mode = mode.eq_ignore_ascii_case("type");
+pub fn required_tools(
+    server: DisplayServer,
+    mode: InjectMode,
+) -> Vec<(&'static str, &'static str)> {
+    let type_mode = mode == InjectMode::Type;
     let mut tools: Vec<(&'static str, &'static str)> = vec![
         ("pw-record", "PipeWire audio capture"),
         ("ydotool", "paste keystroke injection (both servers)"),
@@ -260,7 +261,7 @@ pub fn required_tools(server: DisplayServer, mode: &str) -> Vec<(&'static str, &
 // --- whisper.cpp ------------------------------------------------------------
 
 fn build_whisper(cfg: &Config) -> Result<(), String> {
-    let backend = resolve_backend(&cfg.stt.backend);
+    let backend = resolve_backend(cfg.stt.backend, has_vulkan);
     println!("\n==> whisper.cpp ({backend})");
     let bin = cfg.stt.whisper_server_bin();
     if bin.exists() {
@@ -271,7 +272,7 @@ fn build_whisper(cfg: &Config) -> Result<(), String> {
     // Fail fast with a clear message: without the Vulkan loader the cmake configure
     // below dies in a wall of output that doesn't name the real problem. (Only the
     // Vulkan backend needs it — the CPU backend builds with no GPU libraries.)
-    if backend == "vulkan" && !has_vulkan() {
+    if backend == BuildBackend::Vulkan && !has_vulkan() {
         return Err(
             "the Vulkan loader (libvulkan) is missing — the Vulkan whisper.cpp build needs it.\n  \
              Install it (Arch: `vulkan-icd-loader` + your GPU's ICD, e.g. `vulkan-radeon`), then re-run.\n  \
@@ -281,7 +282,7 @@ fn build_whisper(cfg: &Config) -> Result<(), String> {
     }
     // The Vulkan build also needs a shader compiler and two header sets; without
     // them cmake fails deep in ggml's configure. Name the packages up front.
-    if backend == "vulkan" {
+    if backend == BuildBackend::Vulkan {
         let missing = missing_vulkan_build_deps(have, header_installed);
         if !missing.is_empty() {
             let packages: Vec<&str> = missing.iter().map(|d| d.package).collect();
@@ -331,9 +332,9 @@ fn build_whisper(cfg: &Config) -> Result<(), String> {
         "-DCMAKE_BUILD_TYPE=Release".to_string(),
     ];
     match backend {
-        "vulkan" => configure.push("-DGGML_VULKAN=ON".to_string()),
+        BuildBackend::Vulkan => configure.push("-DGGML_VULKAN=ON".to_string()),
         // CPU backend: OpenBLAS gives ~3-4x faster inference when it's installed.
-        _ => {
+        BuildBackend::Cpu => {
             if has_lib("libopenblas") {
                 println!("  OpenBLAS found — enabling the BLAS backend (faster CPU inference)");
                 configure.push("-DGGML_BLAS=ON".to_string());
@@ -382,7 +383,7 @@ const STT_CMAKE_ARGS: &str = "-DTRANSCRIBE_USE_SYSTEM_BLAS=OFF";
 /// whispy-daemon; source installs build it with cargo, with the Vulkan backend
 /// when `stt.backend` resolves to it (else CPU).
 fn install_stt(cfg: &Config) -> Result<(), String> {
-    let backend = resolve_backend(&cfg.stt.backend);
+    let backend = resolve_backend(cfg.stt.backend, has_vulkan);
     println!("\n==> whispy-stt, Parakeet engine ({backend})");
     let bin = cfg.stt.parakeet_bin_path();
     if bin.is_file() {
@@ -406,7 +407,7 @@ fn install_stt(cfg: &Config) -> Result<(), String> {
             missing.join(", ")
         ));
     }
-    let vulkan = backend == "vulkan";
+    let vulkan = backend == BuildBackend::Vulkan;
     if vulkan {
         let missing = missing_vulkan_build_deps(have, header_installed);
         if !missing.is_empty() {
@@ -986,8 +987,7 @@ fn verify(cfg: &Config) {
     report("daemon", "responds to ping on the IPC socket", daemon_ok);
 
     // ydotoold only matters for paste mode; note it but don't imply failure in type mode.
-    let paste_mode = cfg.injection.mode == "paste";
-    if paste_mode {
+    if cfg.injection.mode.needs_ydotoold() {
         report(
             "ydotoold",
             "active (needed for paste-mode injection)",
@@ -995,8 +995,8 @@ fn verify(cfg: &Config) {
         );
     } else {
         println!(
-            "    [-] {:<12} not needed (injection.mode = \"type\")",
-            "ydotoold"
+            "    [-] {:<12} not needed (injection.mode = \"{}\")",
+            "ydotoold", cfg.injection.mode
         );
     }
 
@@ -1068,21 +1068,33 @@ pub(crate) fn have(cmd: &str) -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// The compute backend an STT server build actually uses: `stt.backend` with
+/// `auto` resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuildBackend {
+    /// Build with the Vulkan GPU backend.
+    Vulkan,
+    /// CPU-only build (OpenBLAS-accelerated for whisper.cpp when present).
+    Cpu,
+}
+
+impl std::fmt::Display for BuildBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Vulkan => "vulkan",
+            Self::Cpu => "cpu",
+        })
+    }
+}
+
 /// Resolve the configured `stt.backend` to a concrete backend for the build:
-/// `"auto"` picks Vulkan when its loader is present, else CPU; the explicit values
-/// pass through unchanged. Unknown strings are validated away at config load, but
-/// fall back to CPU here so `setup whisper` can never panic on one.
-fn resolve_backend(configured: &str) -> &'static str {
+/// `auto` picks Vulkan when `has_vulkan` finds its loader, else CPU; the explicit
+/// values pass through without probing.
+fn resolve_backend(configured: ComputeBackend, has_vulkan: impl FnOnce() -> bool) -> BuildBackend {
     match configured {
-        "vulkan" => "vulkan",
-        "cpu" => "cpu",
-        _ => {
-            if has_vulkan() {
-                "vulkan"
-            } else {
-                "cpu"
-            }
-        }
+        ComputeBackend::Vulkan => BuildBackend::Vulkan,
+        ComputeBackend::Auto if has_vulkan() => BuildBackend::Vulkan,
+        ComputeBackend::Auto | ComputeBackend::Cpu => BuildBackend::Cpu,
     }
 }
 
@@ -1176,8 +1188,7 @@ fn print_next_steps(server: DisplayServer) {
 
 /// `setup keybinds`: just the keybind hints, for the display server in use.
 fn print_keybinds(cfg: &Config) {
-    let server = display::resolve_from_env(Backend::parse(&cfg.injection.backend))
-        .unwrap_or(DisplayServer::Wayland);
+    let server = display::resolve_from_env(cfg.injection.backend).unwrap_or(DisplayServer::Wayland);
     println!("==> push-to-talk keybinds");
     print_server_keybinds(server);
 }
@@ -1314,6 +1325,7 @@ fn print_x11_keybinds() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ConfigChoice;
 
     #[test]
     fn whispy_unit_depends_on_ydotoold() {
@@ -1335,7 +1347,7 @@ mod tests {
     }
 
     /// The command names from `required_tools`, for set-membership assertions.
-    fn tool_names(server: DisplayServer, mode: &str) -> Vec<&'static str> {
+    fn tool_names(server: DisplayServer, mode: InjectMode) -> Vec<&'static str> {
         required_tools(server, mode)
             .into_iter()
             .map(|(cmd, _)| cmd)
@@ -1345,7 +1357,7 @@ mod tests {
     #[test]
     fn required_tools_always_includes_capture_paste_notify() {
         for server in [DisplayServer::Wayland, DisplayServer::X11] {
-            for mode in ["paste", "type"] {
+            for &mode in InjectMode::ALL {
                 let names = tool_names(server, mode);
                 for always in ["pw-record", "ydotool", "notify-send"] {
                     assert!(
@@ -1359,12 +1371,12 @@ mod tests {
 
     #[test]
     fn required_tools_wayland_lists_wl_clipboard_and_wtype_only_in_type_mode() {
-        let paste = tool_names(DisplayServer::Wayland, "paste");
+        let paste = tool_names(DisplayServer::Wayland, InjectMode::Paste);
         assert!(paste.contains(&"wl-copy"));
         assert!(paste.contains(&"wl-paste"));
         assert!(!paste.contains(&"wtype"), "paste mode needs no wtype");
 
-        let typed = tool_names(DisplayServer::Wayland, "type");
+        let typed = tool_names(DisplayServer::Wayland, InjectMode::Type);
         assert!(typed.contains(&"wtype"), "type mode needs wtype");
         // No X11 tools leak into the Wayland list.
         assert!(!typed.contains(&"xdotool"));
@@ -1373,7 +1385,7 @@ mod tests {
 
     #[test]
     fn required_tools_x11_lists_clipboard_and_xdotool_in_both_modes() {
-        for mode in ["paste", "type"] {
+        for &mode in InjectMode::ALL {
             let names = tool_names(DisplayServer::X11, mode);
             assert!(names.contains(&"xclip"), "x11 clipboard for {mode}");
             assert!(names.contains(&"xdotool"), "x11 typing/class for {mode}");
@@ -1588,17 +1600,29 @@ mod tests {
     }
 
     #[test]
-    fn resolve_backend_passes_through_explicit_values() {
-        assert_eq!(resolve_backend("vulkan"), "vulkan");
-        assert_eq!(resolve_backend("cpu"), "cpu");
+    fn resolve_backend_passes_through_explicit_values_without_probing() {
+        let no_probe = || panic!("explicit backends must not probe for Vulkan");
+        assert_eq!(
+            resolve_backend(ComputeBackend::Vulkan, no_probe),
+            BuildBackend::Vulkan
+        );
+        assert_eq!(
+            resolve_backend(ComputeBackend::Cpu, no_probe),
+            BuildBackend::Cpu
+        );
     }
 
     #[test]
-    fn resolve_backend_auto_picks_a_concrete_backend() {
-        // "auto" depends on host Vulkan presence, but must always resolve to one
-        // of the two concrete backends so the build can never proceed on "auto".
-        assert!(matches!(resolve_backend("auto"), "vulkan" | "cpu"));
-        // An unknown string (shouldn't reach here past config validation) is safe.
-        assert!(matches!(resolve_backend("rocm"), "vulkan" | "cpu"));
+    fn resolve_backend_auto_follows_the_vulkan_probe() {
+        assert_eq!(
+            resolve_backend(ComputeBackend::Auto, || true),
+            BuildBackend::Vulkan
+        );
+        assert_eq!(
+            resolve_backend(ComputeBackend::Auto, || false),
+            BuildBackend::Cpu
+        );
+        assert_eq!(BuildBackend::Vulkan.to_string(), "vulkan");
+        assert_eq!(BuildBackend::Cpu.to_string(), "cpu");
     }
 }

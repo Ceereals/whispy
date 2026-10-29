@@ -22,7 +22,7 @@ use std::time::Duration;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use crate::config::{self, Config};
+use crate::config::{self, Config, ConfigChoice, InjectMode};
 use crate::engine::Engine;
 use crate::proc;
 use crate::stt::SttClient;
@@ -175,7 +175,7 @@ impl App {
         Values {
             source: get(SectionKey::Microphone),
             language: get(SectionKey::Language),
-            mode: get(SectionKey::Typing),
+            mode: InjectMode::parse(&get(SectionKey::Typing)).unwrap_or_default(),
             silence_timeout_ms: get(SectionKey::AutoStop).parse().unwrap_or(0),
             engine: Engine::parse(&get(SectionKey::Engine)).unwrap_or_default(),
         }
@@ -188,7 +188,7 @@ impl App {
         let mut cfg = self.cfg.clone();
         cfg.audio.source.clone_from(&values.source);
         cfg.stt.language.clone_from(&values.language);
-        cfg.injection.mode.clone_from(&values.mode);
+        cfg.injection.mode = values.mode;
         cfg.audio.silence_timeout_ms = values.silence_timeout_ms;
         cfg.stt.engine = values.engine;
         cfg.validate()
@@ -326,10 +326,18 @@ fn build_sections(values: &Values) -> Vec<Section> {
             "Typing",
             "How the transcript reaches the focused window.",
             &[
-                ("Type", "type", "wtype types it; works in terminals"),
-                ("Paste", "paste", "clipboard + Ctrl+V; needs ydotoold"),
+                (
+                    "Type",
+                    InjectMode::Type.as_str(),
+                    "wtype types it; works in terminals",
+                ),
+                (
+                    "Paste",
+                    InjectMode::Paste.as_str(),
+                    "clipboard + Ctrl+V; needs ydotoold",
+                ),
             ],
-            &values.mode,
+            values.mode.as_str(),
         ),
         radio(
             SectionKey::AutoStop,

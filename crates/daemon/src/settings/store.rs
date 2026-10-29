@@ -6,7 +6,7 @@ use std::path::Path;
 
 use toml_edit::{DocumentMut, Item, Value};
 
-use crate::config::Config;
+use crate::config::{Config, ConfigChoice, InjectMode};
 use crate::engine::Engine;
 
 /// The settings the TUI edits.
@@ -16,8 +16,8 @@ pub struct Values {
     pub source: String,
     /// `stt.language` (`auto` or an ISO code).
     pub language: String,
-    /// `injection.mode` (`type` or `paste`).
-    pub mode: String,
+    /// `injection.mode`.
+    pub mode: InjectMode,
     /// `audio.silence_timeout_ms` (0 = off).
     pub silence_timeout_ms: u64,
     /// `stt.engine`.
@@ -30,7 +30,7 @@ impl Values {
         Self {
             source: cfg.audio.source.clone(),
             language: cfg.stt.language.clone(),
-            mode: cfg.injection.mode.clone(),
+            mode: cfg.injection.mode,
             silence_timeout_ms: cfg.audio.silence_timeout_ms,
             engine: cfg.stt.engine,
         }
@@ -95,7 +95,7 @@ mod tests {
         Values {
             source: "podmic-mono".into(),
             language: "it".into(),
-            mode: "paste".into(),
+            mode: InjectMode::Type,
             silence_timeout_ms: 1500,
             engine: Engine::Parakeet,
         }
