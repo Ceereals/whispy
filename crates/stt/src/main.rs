@@ -24,6 +24,7 @@ use std::time::Instant;
 use clap::Parser;
 use tiny_http::{Header, Method, Request, Response, Server};
 use transcribe_cpp::{Backend, Model, ModelOptions, RunOptions, Session, SessionOptions};
+use whispy_common::inference;
 
 use reply::Outcome;
 
@@ -155,8 +156,11 @@ fn serve(server: &Server, mut engine: Engine<'_>) {
 /// Dispatch one request; returns the status code and JSON body.
 fn route(request: &mut Request, engine: &mut Engine<'_>) -> (u16, serde_json::Value) {
     match (request.method(), request.url()) {
-        (Method::Post, "/inference") => match inference(request, engine) {
-            Ok(body) => (200, body),
+        (Method::Post, inference::PATH) => match transcribe(request, engine) {
+            Ok(reply) => match serde_json::to_value(reply) {
+                Ok(body) => (200, body),
+                Err(e) => (500, serde_json::json!({ "error": e.to_string() })),
+            },
             Err((status, msg)) => {
                 eprintln!("whispy-stt: {msg}");
                 (status, serde_json::json!({ "error": msg }))
@@ -168,10 +172,10 @@ fn route(request: &mut Request, engine: &mut Engine<'_>) -> (u16, serde_json::Va
 }
 
 /// `POST /inference`: multipart with a WAV `file` and an optional `language`.
-fn inference(
+fn transcribe(
     request: &mut Request,
     engine: &mut Engine<'_>,
-) -> Result<serde_json::Value, (u16, String)> {
+) -> Result<inference::Response, (u16, String)> {
     let content_type = request
         .headers()
         .iter()
@@ -190,13 +194,12 @@ fn inference(
         .take(MAX_BODY_BYTES)
         .read_to_end(&mut body)
         .map_err(|e| (400, format!("reading the request body: {e}")))?;
-    let parts = multipart::parse(&body, &boundary).map_err(|e| (400, e))?;
-    let field = |name: &str| parts.iter().find(|p| p.name == name);
-    let wav = field("file").ok_or_else(|| (400, "missing the `file` part".to_string()))?;
-    let language = field("language").map(|p| String::from_utf8_lossy(&p.data).into_owned());
-    let hint = reply::language_hint(Some(language.as_deref().unwrap_or(engine.default_language)));
+    let form = multipart::inference_form(&body, &boundary).map_err(|e| (400, e))?;
+    let hint = reply::language_hint(Some(
+        form.language.as_deref().unwrap_or(engine.default_language),
+    ));
 
-    let pcm = reply::decode_wav(&wav.data).map_err(|e| (400, format!("bad WAV: {e}")))?;
+    let pcm = reply::decode_wav(&form.wav).map_err(|e| (400, format!("bad WAV: {e}")))?;
     let started = Instant::now();
     let transcript = engine
         .session
@@ -211,7 +214,7 @@ fn inference(
         .map_err(|e| (500, format!("transcription failed: {e}")))?;
     eprintln!(
         "whispy-stt: {:.1} s of audio in {} ms",
-        pcm.len() as f32 / reply::SAMPLE_RATE as f32,
+        pcm.len() as f32 / inference::SAMPLE_RATE as f32,
         started.elapsed().as_millis()
     );
     let outcome = Outcome {
@@ -220,4 +223,81 @@ fn inference(
         token_probs: transcript.tokens.iter().map(|t| t.p).collect(),
     };
     Ok(reply::verbose_json(&outcome, hint.as_deref()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use whispy_common::inference::{
+        BOUNDARY, Request, Response, SAMPLE_RATE, build_multipart, field,
+    };
+
+    use crate::multipart;
+    use crate::reply::{self, Outcome};
+
+    /// A real 16 kHz WAV whose sample bytes spell `\r\n` and `--`, so the
+    /// payload contains what looks like multipart framing.
+    fn tricky_wav() -> Vec<u8> {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: SAMPLE_RATE,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut cursor = Cursor::new(Vec::new());
+        let mut w = hound::WavWriter::new(&mut cursor, spec).unwrap();
+        for s in [i16::from_le_bytes(*b"\r\n"), i16::from_le_bytes(*b"--"), 0] {
+            w.write_sample(s).unwrap();
+        }
+        w.finalize().unwrap();
+        let wav = cursor.into_inner();
+        assert!(wav.windows(4).any(|w| w == b"\r\n--"));
+        wav
+    }
+
+    /// The daemon's real request, parsed and answered by whispy-stt, decodes
+    /// back into the daemon's `Response` with every field intact.
+    #[test]
+    fn daemon_request_round_trips_through_whispy_stt() {
+        let wav = tricky_wav();
+        let request = Request {
+            language: "it",
+            prompt: Some("Hyprland, Quickshell"),
+        };
+        let body = build_multipart(BOUNDARY, &request, &wav);
+        let content_type = format!("multipart/form-data; boundary={BOUNDARY}");
+
+        let boundary = multipart::boundary(&content_type).unwrap();
+        let text = String::from_utf8_lossy(&body);
+        for name in [
+            field::RESPONSE_FORMAT,
+            field::LANGUAGE,
+            field::TEMPERATURE,
+            field::PROMPT,
+            field::FILE,
+        ] {
+            assert!(text.contains(&format!("name=\"{name}\"")), "{name} sent");
+        }
+        let form = multipart::inference_form(&body, &boundary).unwrap();
+        assert_eq!(form.wav, wav, "binary WAV survives byte for byte");
+        assert_eq!(form.language.as_deref(), Some("it"));
+        let pcm = reply::decode_wav(&form.wav).unwrap();
+        assert_eq!(pcm.len(), 3);
+
+        let hint = reply::language_hint(form.language.as_deref());
+        let outcome = Outcome {
+            text: " Ciao mondo ".into(),
+            language: None,
+            token_probs: vec![0.5],
+        };
+        let json = serde_json::to_string(&reply::verbose_json(&outcome, hint.as_deref())).unwrap();
+        let resp: Response = serde_json::from_str(&json).unwrap();
+        assert_eq!(resp.text, "Ciao mondo");
+        assert_eq!(resp.detected_language.as_deref(), Some("italian"));
+        assert_eq!(resp.segments.len(), 1);
+        assert_eq!(resp.segments[0].text, "Ciao mondo");
+        assert!((resp.segments[0].avg_logprob - 0.5f32.ln()).abs() < 1e-6);
+        assert!(resp.segments[0].no_speech_prob.abs() < f32::EPSILON);
+    }
 }

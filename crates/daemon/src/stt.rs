@@ -4,16 +4,15 @@
 //! `multipart/form-data` WAV upload (`response_format=verbose_json`) and parses
 //! the response into a [`Transcription`]: the transcript text plus the
 //! per-segment confidence signals (`avg_logprob`, `no_speech_prob`) the filter
-//! uses to reject hallucinations.
+//! uses to reject hallucinations. The wire format itself is the shared
+//! [`whispy_common::inference`] contract; this module adds transport and aggregation.
 
 use std::fmt;
 use std::io::Cursor;
 use std::time::Duration;
 
 use tracing::{debug, warn};
-
-/// Multipart boundary marker for the `/inference` request body.
-const BOUNDARY: &str = "----whispyFormBoundary7MA4YWxkTrZu0gW";
+use whispy_common::inference::{self, BOUNDARY, Request, Response, SAMPLE_RATE};
 
 /// HTTP client for a running whisper-server instance.
 pub struct SttClient {
@@ -59,26 +58,6 @@ impl fmt::Display for SttError {
 
 impl std::error::Error for SttError {}
 
-/// The subset of whisper-server's `verbose_json` response we care about.
-#[derive(serde::Deserialize)]
-struct Response {
-    #[serde(default)]
-    text: String,
-    #[serde(default)]
-    segments: Vec<Segment>,
-    #[serde(default)]
-    detected_language: Option<String>,
-}
-
-/// One transcription segment; we only read the confidence fields.
-#[derive(serde::Deserialize)]
-struct Segment {
-    #[serde(default)]
-    avg_logprob: f32,
-    #[serde(default)]
-    no_speech_prob: f32,
-}
-
 impl SttClient {
     /// Build from config (base URL = `http://host:port`).
     pub fn new(cfg: &crate::config::Stt, prompt: Option<String>) -> Self {
@@ -109,8 +88,12 @@ impl SttClient {
             "encoded WAV for inference"
         );
 
-        let body = build_multipart(&self.language, self.prompt.as_deref(), &wav);
-        let url = format!("{}/inference", self.base_url);
+        let request = Request {
+            language: &self.language,
+            prompt: self.prompt.as_deref(),
+        };
+        let body = inference::build_multipart(BOUNDARY, &request, &wav);
+        let url = format!("{}{}", self.base_url, inference::PATH);
 
         let mut resp = self
             .agent
@@ -150,11 +133,11 @@ fn base_url(host: &str, port: u16) -> String {
     }
 }
 
-/// Encode signed-16-bit mono PCM at 16 kHz into an in-memory WAV file.
+/// Encode signed-16-bit mono PCM at [`SAMPLE_RATE`] into an in-memory WAV file.
 fn encode_wav(samples: &[i16]) -> Result<Vec<u8>, SttError> {
     let spec = hound::WavSpec {
         channels: 1,
-        sample_rate: 16000,
+        sample_rate: SAMPLE_RATE,
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
@@ -173,40 +156,6 @@ fn encode_wav(samples: &[i16]) -> Result<Vec<u8>, SttError> {
             .map_err(|e| SttError::Audio(e.to_string()))?;
     }
     Ok(cursor.into_inner())
-}
-
-/// Assemble the `multipart/form-data` body whisper-server expects: the text
-/// fields (`response_format`, `language`, `temperature`) and the WAV `file` part.
-fn build_multipart(language: &str, prompt: Option<&str>, wav: &[u8]) -> Vec<u8> {
-    let mut body = Vec::new();
-
-    let mut text_field = |name: &str, value: &str| {
-        body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
-        body.extend_from_slice(
-            format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
-        );
-        body.extend_from_slice(value.as_bytes());
-        body.extend_from_slice(b"\r\n");
-    };
-
-    text_field("response_format", "verbose_json");
-    text_field("language", language);
-    text_field("temperature", "0.0");
-    if let Some(p) = prompt {
-        text_field("prompt", p);
-    }
-
-    // File part: the WAV bytes go in raw, not as UTF-8.
-    body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
-    body.extend_from_slice(
-        b"Content-Disposition: form-data; name=\"file\"; filename=\"clip.wav\"\r\n",
-    );
-    body.extend_from_slice(b"Content-Type: audio/wav\r\n\r\n");
-    body.extend_from_slice(wav);
-    body.extend_from_slice(b"\r\n");
-
-    body.extend_from_slice(format!("--{BOUNDARY}--\r\n").as_bytes());
-    body
 }
 
 /// Collapse the raw response into the aggregate confidence signals the filter uses.
@@ -249,6 +198,7 @@ fn normalize_whitespace(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use whispy_common::inference::Segment;
 
     #[test]
     fn base_url_brackets_ipv6_hosts() {
@@ -287,6 +237,7 @@ mod tests {
             segments: vec![Segment {
                 avg_logprob: -0.2,
                 no_speech_prob: 0.1,
+                ..Segment::default()
             }],
             detected_language: None,
         };
@@ -302,10 +253,12 @@ mod tests {
                 Segment {
                     avg_logprob: -0.2,
                     no_speech_prob: 0.1,
+                    ..Segment::default()
                 },
                 Segment {
                     avg_logprob: -0.4,
                     no_speech_prob: 0.9,
+                    ..Segment::default()
                 },
             ],
             detected_language: None,
@@ -313,28 +266,6 @@ mod tests {
         let t = aggregate(resp);
         assert!((t.avg_logprob - -0.3).abs() < 1e-6);
         assert!((t.no_speech_prob - 0.9).abs() < 1e-6);
-    }
-
-    #[test]
-    fn multipart_contains_required_fields() {
-        let body = build_multipart("auto", None, b"WAVDATA");
-        let s = String::from_utf8_lossy(&body);
-        assert!(s.contains("name=\"response_format\""));
-        assert!(s.contains("verbose_json"));
-        assert!(s.contains("name=\"language\""));
-        assert!(s.contains("name=\"temperature\""));
-        assert!(s.contains("filename=\"clip.wav\""));
-        assert!(s.contains("Content-Type: audio/wav"));
-        assert!(s.contains("WAVDATA"));
-        assert!(s.ends_with(&format!("--{BOUNDARY}--\r\n")));
-    }
-
-    #[test]
-    fn multipart_includes_prompt_when_present() {
-        let body = build_multipart("auto", Some("Hyprland, Quickshell"), b"WAV");
-        let s = String::from_utf8_lossy(&body);
-        assert!(s.contains("name=\"prompt\""));
-        assert!(s.contains("Hyprland, Quickshell"));
     }
 
     /// Serve one canned HTTP response on a loopback port and return a client

@@ -1,13 +1,10 @@
-//! Turning a transcript into the whisper-server `verbose_json` subset whispy-daemon
-//! parses (`text`, `detected_language`, `segments[].avg_logprob/no_speech_prob`),
-//! and decoding the uploaded WAV. Pure, so the wire format is unit-tested.
+//! Turning a transcript into the shared [`inference::Response`] (the
+//! whisper-server `verbose_json` subset whispy-daemon parses), and decoding the
+//! uploaded WAV. Pure, so the wire format is unit-tested.
 
 use std::io::Cursor;
 
-use serde_json::{Value, json};
-
-/// The sample rate every model here expects and whispy always sends.
-pub const SAMPLE_RATE: u32 = 16_000;
+use whispy_common::inference::{self, SAMPLE_RATE, Segment};
 
 /// What the engine produced, reduced to what the reply needs.
 #[derive(Debug, Clone, PartialEq)]
@@ -23,9 +20,9 @@ pub struct Outcome {
 /// the token probabilities (whisper's `avg_logprob` scale). Parakeet has no
 /// "no speech" head: it returns empty text on silence, so `no_speech_prob` is 0
 /// and the daemon's empty-transcript filter does the dropping.
-pub fn verbose_json(outcome: &Outcome, hinted_language: Option<&str>) -> Value {
+pub fn verbose_json(outcome: &Outcome, hinted_language: Option<&str>) -> inference::Response {
     let text = outcome.text.trim();
-    let language = outcome
+    let detected_language = outcome
         .language
         .as_deref()
         .or(hinted_language)
@@ -33,17 +30,17 @@ pub fn verbose_json(outcome: &Outcome, hinted_language: Option<&str>) -> Value {
     let segments = if text.is_empty() {
         Vec::new()
     } else {
-        vec![json!({
-            "text": text,
-            "avg_logprob": avg_logprob(&outcome.token_probs),
-            "no_speech_prob": 0.0,
-        })]
+        vec![Segment {
+            text: text.to_string(),
+            avg_logprob: avg_logprob(&outcome.token_probs),
+            no_speech_prob: 0.0,
+        }]
     };
-    json!({
-        "text": text,
-        "detected_language": language,
-        "segments": segments,
-    })
+    inference::Response {
+        text: text.to_string(),
+        detected_language,
+        segments,
+    }
 }
 
 /// Mean `ln(p)` over the finite, positive token probabilities (0.0 = certain,
@@ -150,12 +147,13 @@ mod tests {
             language: Some("it".into()),
             token_probs: vec![1.0, 0.5],
         };
-        let v = verbose_json(&out, None);
-        assert_eq!(v["text"], "Ciao, come stai?");
-        assert_eq!(v["detected_language"], "italian");
-        let seg = &v["segments"][0];
-        assert!((seg["avg_logprob"].as_f64().unwrap() - f64::from(0.5f32.ln() / 2.0)).abs() < 1e-6);
-        assert_eq!(seg["no_speech_prob"], 0.0);
+        let r = verbose_json(&out, None);
+        assert_eq!(r.text, "Ciao, come stai?");
+        assert_eq!(r.detected_language.as_deref(), Some("italian"));
+        let seg = &r.segments[0];
+        assert_eq!(seg.text, "Ciao, come stai?");
+        assert!((seg.avg_logprob - 0.5f32.ln() / 2.0).abs() < 1e-6);
+        assert!(seg.no_speech_prob.abs() < f32::EPSILON);
     }
 
     #[test]
@@ -165,10 +163,14 @@ mod tests {
             language: None,
             token_probs: vec![],
         };
-        let v = verbose_json(&out, Some("it"));
-        assert_eq!(v["text"], "");
-        assert_eq!(v["segments"].as_array().unwrap().len(), 0);
-        assert_eq!(v["detected_language"], "italian", "falls back to the hint");
+        let r = verbose_json(&out, Some("it"));
+        assert_eq!(r.text, "");
+        assert_eq!(r.segments, []);
+        assert_eq!(
+            r.detected_language.as_deref(),
+            Some("italian"),
+            "falls back to the hint"
+        );
     }
 
     #[test]

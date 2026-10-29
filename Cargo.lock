@@ -1520,6 +1520,7 @@ dependencies = [
  "serde_json",
  "tiny_http",
  "transcribe-cpp",
+ "whispy-common",
 ]
 
 [[package]]
