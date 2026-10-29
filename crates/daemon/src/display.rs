@@ -5,6 +5,12 @@
 //! The decision lives behind a pure, env-free [`resolve`] so it can be unit-tested;
 //! [`resolve_from_env`] is the thin shim that reads `WAYLAND_DISPLAY`/`DISPLAY`.
 
+use std::fmt;
+
+use serde::Deserialize;
+
+use crate::config::ConfigChoice;
+
 /// Which display server the daemon should drive its injection/clipboard tools for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisplayServer {
@@ -15,9 +21,11 @@ pub enum DisplayServer {
 }
 
 /// The configured `injection.backend` preference.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Backend {
     /// Detect from the environment (`WAYLAND_DISPLAY` then `DISPLAY`).
+    #[default]
     Auto,
     /// Force the Wayland backend.
     Wayland,
@@ -25,15 +33,21 @@ pub enum Backend {
     X11,
 }
 
-impl Backend {
-    /// Parse the config string. Unknown values are rejected by `Config::validate`
-    /// before we get here, so this falls back to [`Backend::Auto`] defensively.
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "wayland" => Self::Wayland,
-            "x11" => Self::X11,
-            _ => Self::Auto,
+impl ConfigChoice for Backend {
+    const ALL: &'static [Self] = &[Self::Auto, Self::Wayland, Self::X11];
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Wayland => "wayland",
+            Self::X11 => "x11",
         }
+    }
+}
+
+impl fmt::Display for Backend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -106,10 +120,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_maps_known_strings_else_auto() {
-        assert_eq!(Backend::parse("wayland"), Backend::Wayland);
-        assert_eq!(Backend::parse("x11"), Backend::X11);
-        assert_eq!(Backend::parse("auto"), Backend::Auto);
-        assert_eq!(Backend::parse("bogus"), Backend::Auto);
+    fn parse_maps_only_known_keywords() {
+        assert_eq!(Backend::parse("wayland"), Some(Backend::Wayland));
+        assert_eq!(Backend::parse("x11"), Some(Backend::X11));
+        assert_eq!(Backend::parse("auto"), Some(Backend::Auto));
+        assert_eq!(Backend::parse("bogus"), None);
     }
 }

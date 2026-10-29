@@ -98,7 +98,7 @@ impl App {
         let on_rms = move |rms: f32| rms_status.recording(rms);
 
         let too_long_status = self.status.clone();
-        let too_long_notify = should_notify(&self.cfg.ui.notify, self.server);
+        let too_long_notify = self.cfg.ui.notify.should_notify(self.server);
         let on_too_long = move || {
             warn!("clip exceeded max duration");
             too_long_status.error("too_long", "clip exceeded the maximum duration");
@@ -243,29 +243,14 @@ impl App {
     }
 
     /// Best-effort desktop notification, gated by `ui.notify` and the display
-    /// server (see [`should_notify`]). A no-op when notifications are disabled for
-    /// this session; `state.json` is still published unconditionally.
+    /// server (see [`NotifyMode::should_notify`]). A no-op when notifications are
+    /// disabled for this session; `state.json` is still published unconditionally.
+    ///
+    /// [`NotifyMode::should_notify`]: crate::config::NotifyMode::should_notify
     fn notify(&self, summary: &str, body: &str) {
-        if should_notify(&self.cfg.ui.notify, self.server) {
+        if self.cfg.ui.notify.should_notify(self.server) {
             notify(summary, body);
         }
-    }
-}
-
-/// Decide whether to fire a desktop notification for a transient state transition.
-///
-/// - `"off"` — never.
-/// - `"on"` — always.
-/// - `"auto"` (default) — only on non-layer-shell sessions (X11), where the
-///   Quickshell pill can't run; Wayland users see the pill instead.
-///
-/// Unknown values (rejected by `Config::validate` before we get here) behave as
-/// `"auto"` defensively.
-fn should_notify(mode: &str, server: DisplayServer) -> bool {
-    match mode {
-        "off" => false,
-        "on" => true,
-        _ => server == DisplayServer::X11,
     }
 }
 
@@ -309,32 +294,4 @@ fn notify(summary: &str, body: &str) {
             .arg(body),
         crate::proc::PROBE,
     );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn notify_off_never_fires() {
-        assert!(!should_notify("off", DisplayServer::X11));
-        assert!(!should_notify("off", DisplayServer::Wayland));
-    }
-
-    #[test]
-    fn notify_on_always_fires() {
-        assert!(should_notify("on", DisplayServer::X11));
-        assert!(should_notify("on", DisplayServer::Wayland));
-    }
-
-    #[test]
-    fn notify_auto_fires_only_on_x11() {
-        // X11 has no layer-shell pill, so the notification is the only UI there.
-        assert!(should_notify("auto", DisplayServer::X11));
-        // Wayland gets the Quickshell pill, so auto stays quiet to avoid double-serving.
-        assert!(!should_notify("auto", DisplayServer::Wayland));
-        // Unknown values (validated away) behave as auto.
-        assert!(should_notify("bogus", DisplayServer::X11));
-        assert!(!should_notify("bogus", DisplayServer::Wayland));
-    }
 }

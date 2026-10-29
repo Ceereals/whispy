@@ -90,7 +90,7 @@ Cargo workspace (`resolver = "3"`, `edition = "2024"`, MSRV `rust-version = 1.88
 | `proc.rs` | Deadline-bounded subprocess helpers (`output`/`status`/`with_stdin`) used for every runtime tool call (clipboard, typing, `ydotool`, window-class probes) so a wedged tool can't hang a thread. |
 | `inject.rs` | Text injection: `paste` mode (`wl-copy` + `ydotool` Ctrl+V, clipboard save/restore) or `type` mode (`wtype`). |
 | `state.rs` | `StatePublisher` writes `state.json` atomically (tmp + rename); `Status` keeps in-memory + on-disk snapshot in sync and flashes transient states. |
-| `config.rs` | TOML config; built-in defaults embedded via `include_str!`; `Config::validate` rejects bad config at startup. |
+| `config.rs` | TOML config; built-in defaults embedded via `include_str!`; keyword fields (`stt.backend`, `injection.mode`, `ui.notify`, …) load as `ConfigChoice` enums so bad values fail at parse; `Config::validate` rejects the rest of a bad config at startup. |
 | `setup.rs` | `whispy-daemon setup` — idempotent one-shot bootstrap (install the STT engine: `whispy-stt` via cargo or whisper.cpp build; fetch + verify its model; ydotool perms, seed config, install systemd unit, opt-in Quickshell), then prints keybinds for the detected config (`HyprConfig`: Omarchy 4 Lua / Omarchy 3 / Hyprland Lua / hyprlang). |
 | `stats.rs` | `whispy-daemon stats` — read-only summary of `transcripts.jsonl` (accepted vs dropped by reason) for filter tuning. |
 | `settings/` | `whispy-daemon settings` — ratatui settings TUI (microphone + level meter + test dictation, language, typing, auto-stop, history). `form.rs` is the pure, tested screen state; `store.rs` edits `config.toml` with `toml_edit` so comments survive; `mic.rs` reuses `audio::Recorder` so the meter/test hear what dictation hears. Terminal palette colors only, so it follows the Omarchy theme. |
@@ -123,7 +123,9 @@ on it, and the QML pill reads the `state.json` shape.
 
 If you add a config field, update both the struct in `config.rs` and
 `config/default.toml` (with an explanatory comment), and keep `#[serde(default)]`
-on optional sections so existing user configs keep parsing.
+on optional sections so existing user configs keep parsing. A field that takes one
+of a fixed set of keywords is a serde enum (`rename_all = "lowercase"`) implementing
+`ConfigChoice`, never a `String` matched at each use.
 
 ## Development workflow
 

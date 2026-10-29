@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use tracing::{debug, warn};
 
+use crate::config::InjectMode;
 use crate::display::DisplayServer;
 use crate::proc;
 
@@ -67,8 +68,8 @@ pub trait InjectBackend: Send + Sync {
 pub struct Injector {
     /// The clipboard/type backend (Wayland or X11).
     backend: Box<dyn InjectBackend>,
-    /// When true, type the transcript instead of clipboard + paste.
-    use_type: bool,
+    /// Type the transcript, or clipboard + paste it.
+    mode: InjectMode,
     /// ydotool key tokens (e.g. `["29:1", "47:1", "47:0", "29:0"]`).
     paste_keys: Vec<String>,
     /// Delay (ms) between ydotool key events, so the held modifier registers.
@@ -119,13 +120,6 @@ impl Injector {
             .split_whitespace()
             .map(String::from)
             .collect();
-        let use_type = cfg.mode.eq_ignore_ascii_case("type");
-        if !use_type && !cfg.mode.eq_ignore_ascii_case("paste") {
-            warn!(
-                mode = %cfg.mode,
-                "unknown injection.mode; expected \"paste\" or \"type\", falling back to paste"
-            );
-        }
         let backend: Box<dyn InjectBackend> = match server {
             DisplayServer::Wayland => Box::new(WaylandClipboard),
             DisplayServer::X11 => Box::new(X11Clipboard::detect()),
@@ -133,7 +127,7 @@ impl Injector {
         debug!(backend = backend.name(), mode = %cfg.mode, "injection backend selected");
         Self {
             backend,
-            use_type,
+            mode: cfg.mode,
             paste_keys,
             key_delay_ms: cfg.key_delay_ms,
             restore_delay: Duration::from_millis(cfg.restore_clipboard_delay_ms),
@@ -147,10 +141,9 @@ impl Injector {
 
     /// Inject `text` into the focused window using the configured mode.
     pub fn inject(&self, text: &str) -> Result<(), InjectError> {
-        if self.use_type {
-            self.backend.type_text(text)
-        } else {
-            self.paste_text(text)
+        match self.mode {
+            InjectMode::Type => self.backend.type_text(text),
+            InjectMode::Paste => self.paste_text(text),
         }
     }
 
@@ -501,8 +494,8 @@ mod tests {
     fn injector_with_keys(paste_keys: &str) -> Injector {
         Injector::new(
             &crate::config::Injection {
-                mode: "paste".to_string(),
-                backend: "auto".to_string(),
+                mode: InjectMode::Paste,
+                backend: crate::display::Backend::Auto,
                 restore_clipboard_delay_ms: 150,
                 paste_keys: paste_keys.to_string(),
                 key_delay_ms: 25,
@@ -542,8 +535,8 @@ mod tests {
     #[test]
     fn new_selects_backend_by_display_server() {
         let cfg = crate::config::Injection {
-            mode: "paste".to_string(),
-            backend: "auto".to_string(),
+            mode: InjectMode::Paste,
+            backend: crate::display::Backend::Auto,
             restore_clipboard_delay_ms: 150,
             paste_keys: "29:1 29:0".to_string(),
             key_delay_ms: 25,

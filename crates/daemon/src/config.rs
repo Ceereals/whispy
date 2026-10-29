@@ -1,9 +1,11 @@
 //! Daemon configuration: parsed from TOML, with the defaults baked into the binary.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::display::{Backend, DisplayServer};
 use crate::engine::{Engine, STT_BIN};
 
 /// Built-in defaults, embedded so the daemon runs without an installed config file.
@@ -49,11 +51,11 @@ pub struct Stt {
     pub model_path: String,
     pub language: String,
     pub server_bin: String,
-    /// whisper.cpp compute backend that `setup whisper` builds whisper-server with:
-    /// `"auto"` (Vulkan when the loader is present, else CPU), `"vulkan"`, or `"cpu"`.
-    /// Only consulted at build time; an installed binary keeps whatever it was built with.
-    #[serde(default = "default_backend")]
-    pub backend: String,
+    /// Compute backend the STT server is built with (`setup`) and, for whispy-stt,
+    /// runs on (see [`ComputeBackend`]). An installed whisper-server keeps whatever
+    /// it was built with.
+    #[serde(default)]
+    pub backend: ComputeBackend,
     /// Hard cap on a single `/inference` request. Without it a hung whisper-server
     /// (e.g. a GPU/Vulkan lockup) would strand the daemon in `transcribing` forever.
     #[serde(default = "default_stt_timeout_secs")]
@@ -73,10 +75,6 @@ pub struct Stt {
 
 fn default_parakeet_model_path() -> String {
     "~/.local/share/whispy/models/parakeet-ultra-Q8_0.gguf".to_string()
-}
-
-fn default_backend() -> String {
-    "auto".to_string()
 }
 
 fn default_stt_timeout_secs() -> u64 {
@@ -167,15 +165,13 @@ pub struct Filter {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Injection {
-    /// "paste" = clipboard + ydotool Ctrl+V (preserves accents; GUI apps only).
-    /// "type"  = wtype/xdotool types the transcript directly (works in terminals too).
-    #[serde(default = "default_mode")]
-    pub mode: String,
-    /// Display server / injection backend: "auto" (detect via `WAYLAND_DISPLAY`/`DISPLAY`),
-    /// "wayland" (wl-copy/wl-paste/wtype), or "x11" (xclip/xsel/xdotool). ydotool
-    /// delivers the paste keystroke on both.
-    #[serde(default = "default_inject_backend")]
-    pub backend: String,
+    /// How the transcript reaches the focused window (see [`InjectMode`]).
+    #[serde(default)]
+    pub mode: InjectMode,
+    /// Display server / injection backend (see [`Backend`]). ydotool delivers the
+    /// paste keystroke on both.
+    #[serde(default)]
+    pub backend: Backend,
     pub restore_clipboard_delay_ms: u64,
     pub paste_keys: String,
     /// Delay between ydotool key events. Without it the Ctrl+V events fire in one
@@ -188,35 +184,144 @@ fn default_key_delay() -> u64 {
     25
 }
 
-fn default_mode() -> String {
-    "paste".to_string()
-}
-
-fn default_inject_backend() -> String {
-    "auto".to_string()
-}
-
 /// UI / status-feedback options.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Ui {
     /// Desktop notifications on transient state transitions (`success`/`error`),
-    /// for sessions without the Quickshell pill:
-    ///   "auto" = notify only on X11 (where the layer-shell pill can't run),
-    ///   "on"   = always notify, "off" = never.
-    #[serde(default = "default_notify")]
-    pub notify: String,
+    /// for sessions without the Quickshell pill (see [`NotifyMode`]).
+    #[serde(default)]
+    pub notify: NotifyMode,
 }
 
-impl Default for Ui {
-    fn default() -> Self {
-        Self {
-            notify: default_notify(),
+/// A config value that is one of a fixed set of lowercase keywords (`stt.engine`,
+/// `stt.backend`, `injection.mode`, `injection.backend`, `ui.notify`).
+///
+/// serde parses each such field into its enum when the config loads, so an unknown
+/// keyword fails there, with the offending `key = "value"` line in the error, and
+/// code past loading never sees one. This trait names and lists the keywords for
+/// whoever writes them back (the settings screen).
+pub trait ConfigChoice: Copy + 'static {
+    /// Every value, in the order the settings screen lists them.
+    const ALL: &'static [Self];
+
+    /// The keyword as written in `config.toml`.
+    fn as_str(self) -> &'static str;
+
+    /// Parse a keyword exactly as config loading does (lowercase, no aliases).
+    fn parse(value: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|c| c.as_str() == value)
+    }
+}
+
+/// How a transcript reaches the focused window (`injection.mode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InjectMode {
+    /// Clipboard + ydotool Ctrl+V: keeps accents, GUI apps only.
+    #[default]
+    Paste,
+    /// wtype/xdotool types the transcript directly: works in terminals too.
+    Type,
+}
+
+impl InjectMode {
+    /// Whether this mode presses keys through ydotool, so `ydotoold` must run.
+    pub fn needs_ydotoold(self) -> bool {
+        self == Self::Paste
+    }
+}
+
+impl ConfigChoice for InjectMode {
+    const ALL: &'static [Self] = &[Self::Type, Self::Paste];
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Paste => "paste",
+            Self::Type => "type",
         }
     }
 }
 
-fn default_notify() -> String {
-    "auto".to_string()
+impl fmt::Display for InjectMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// When to raise desktop notifications (`ui.notify`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NotifyMode {
+    /// Only where the Quickshell pill can't run (X11, no layer-shell).
+    #[default]
+    Auto,
+    /// Always.
+    On,
+    /// Never.
+    Off,
+}
+
+impl NotifyMode {
+    /// Whether to fire a desktop notification for a transient state transition on
+    /// `server`. `Auto` stays quiet on Wayland, where the pill shows it instead.
+    pub fn should_notify(self, server: DisplayServer) -> bool {
+        match self {
+            Self::Auto => server == DisplayServer::X11,
+            Self::On => true,
+            Self::Off => false,
+        }
+    }
+}
+
+impl ConfigChoice for NotifyMode {
+    const ALL: &'static [Self] = &[Self::Auto, Self::On, Self::Off];
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
+}
+
+impl fmt::Display for NotifyMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The STT server's compute backend (`stt.backend`). `setup` resolves `Auto` to a
+/// concrete build; whispy-stt takes the keyword as its `--backend` and resolves it
+/// itself at start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ComputeBackend {
+    /// Vulkan when its loader is present, else CPU.
+    #[default]
+    Auto,
+    /// The Vulkan GPU backend (needs libvulkan + a GPU ICD).
+    Vulkan,
+    /// CPU only (whisper.cpp enables OpenBLAS when it's installed).
+    Cpu,
+}
+
+impl ConfigChoice for ComputeBackend {
+    const ALL: &'static [Self] = &[Self::Auto, Self::Vulkan, Self::Cpu];
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Vulkan => "vulkan",
+            Self::Cpu => "cpu",
+        }
+    }
+}
+
+impl fmt::Display for ComputeBackend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -307,9 +412,9 @@ impl Config {
 
     /// Validate the loaded config before the daemon commits to starting. Catches
     /// the misconfigurations that would otherwise fail opaquely at first dictation
-    /// (missing model, bad injection mode, out-of-range thresholds).
+    /// (missing model, no paste keys, out-of-range thresholds).
     pub fn validate(&self) -> Result<(), String> {
-        // An unknown `stt.engine` already failed deserialization.
+        // Unknown keywords ([`ConfigChoice`] fields) already failed deserialization.
         let engine = self.stt.engine;
         let bin = self.stt.server_bin_path();
         if !bin.exists() {
@@ -328,15 +433,6 @@ impl Config {
             ));
         }
 
-        match self.stt.backend.as_str() {
-            "auto" | "vulkan" | "cpu" => {}
-            other => {
-                return Err(format!(
-                    "stt.backend must be \"auto\", \"vulkan\", or \"cpu\", got {other:?}"
-                ));
-            }
-        }
-
         // The clip goes to whisper as a WAV that is always labeled 16 kHz mono
         // (whisper's native input); any other capture format would be misread.
         if self.audio.rate != 16000 || self.audio.channels != 1 {
@@ -346,36 +442,8 @@ impl Config {
             ));
         }
 
-        match self.injection.mode.as_str() {
-            "paste" => {
-                if self.injection.paste_keys.trim().is_empty() {
-                    return Err("injection.paste_keys must be set when mode = \"paste\"".into());
-                }
-            }
-            "type" => {}
-            other => {
-                return Err(format!(
-                    "injection.mode must be \"paste\" or \"type\", got {other:?}"
-                ));
-            }
-        }
-
-        match self.injection.backend.as_str() {
-            "auto" | "wayland" | "x11" => {}
-            other => {
-                return Err(format!(
-                    "injection.backend must be \"auto\", \"wayland\", or \"x11\", got {other:?}"
-                ));
-            }
-        }
-
-        match self.ui.notify.as_str() {
-            "auto" | "on" | "off" => {}
-            other => {
-                return Err(format!(
-                    "ui.notify must be \"auto\", \"on\", or \"off\", got {other:?}"
-                ));
-            }
+        if self.injection.mode == InjectMode::Paste && self.injection.paste_keys.trim().is_empty() {
+            return Err("injection.paste_keys must be set when mode = \"paste\"".into());
         }
 
         if self.audio.gain <= 0.0 || !self.audio.gain.is_finite() {
@@ -710,11 +778,7 @@ mod tests {
         assert!(cfg.validate().is_err());
 
         let (mut cfg, _g) = valid_config();
-        cfg.injection.mode = "nope".into();
-        assert!(cfg.validate().is_err());
-
-        let (mut cfg, _g) = valid_config();
-        cfg.injection.mode = "paste".into();
+        cfg.injection.mode = InjectMode::Paste;
         cfg.injection.paste_keys = "  ".into();
         assert!(cfg.validate().is_err());
 
@@ -725,43 +789,116 @@ mod tests {
         let (mut cfg, _g) = valid_config();
         cfg.filter.fuzzy_ratio = 1.5;
         assert!(cfg.validate().is_err());
-
-        let (mut cfg, _g) = valid_config();
-        cfg.stt.backend = "rocm".into();
-        assert!(cfg.validate().is_err());
     }
 
     #[test]
-    fn validate_accepts_each_known_backend() {
-        for backend in ["auto", "vulkan", "cpu"] {
-            let (mut cfg, _g) = valid_config();
-            cfg.stt.backend = backend.into();
-            assert!(cfg.validate().is_ok(), "{backend} should be valid");
+    fn validate_needs_paste_keys_only_in_paste_mode() {
+        let (mut cfg, _g) = valid_config();
+        cfg.injection.mode = InjectMode::Type;
+        cfg.injection.paste_keys = "  ".into();
+        assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
+    }
+
+    /// The embedded defaults with `[section] key` set to the string `value`, or
+    /// removed when `value` is `None`, parsed the way the daemon loads a config.
+    fn load_with(section: &str, key: &str, value: Option<&str>) -> Result<Config, String> {
+        let mut doc: toml_edit::DocumentMut = DEFAULT_TOML.parse().unwrap();
+        let table = doc[section].as_table_mut().unwrap();
+        match value {
+            Some(v) => {
+                table.insert(key, toml_edit::value(v));
+            }
+            None => {
+                table.remove(key).unwrap();
+            }
+        }
+        toml::from_str(&doc.to_string()).map_err(|e| e.to_string())
+    }
+
+    /// Every keyword of `T` loads as that value, and `ConfigChoice` / `Display`
+    /// agree with serde on its spelling.
+    fn assert_keywords<T>(section: &str, key: &str, get: impl Fn(&Config) -> T)
+    where
+        T: ConfigChoice + PartialEq + fmt::Debug + fmt::Display,
+    {
+        for &choice in T::ALL {
+            let cfg = load_with(section, key, Some(choice.as_str())).unwrap();
+            assert_eq!(get(&cfg), choice, "{section}.{key} = {choice}");
+            assert_eq!(T::parse(choice.as_str()), Some(choice));
+            assert_eq!(choice.to_string(), choice.as_str());
         }
     }
 
-    #[test]
-    fn validate_accepts_each_known_injection_backend() {
-        for backend in ["auto", "wayland", "x11"] {
-            let (mut cfg, _g) = valid_config();
-            cfg.injection.backend = backend.into();
-            assert!(cfg.validate().is_ok(), "{backend} should be valid");
-        }
-        let (mut cfg, _g) = valid_config();
-        cfg.injection.backend = "mir".into();
-        assert!(cfg.validate().is_err());
+    /// An unknown keyword fails loading, and the error shows the key and value.
+    fn assert_rejects(section: &str, key: &str, bad: &str) {
+        let err = load_with(section, key, Some(bad)).unwrap_err();
+        assert!(err.contains(&format!("{key} = \"{bad}\"")), "{err}");
+        assert!(err.contains("unknown variant"), "{err}");
     }
 
     #[test]
-    fn validate_accepts_each_known_notify_mode() {
-        for mode in ["auto", "on", "off"] {
-            let (mut cfg, _g) = valid_config();
-            cfg.ui.notify = mode.into();
-            assert!(cfg.validate().is_ok(), "{mode} should be valid");
-        }
-        let (mut cfg, _g) = valid_config();
-        cfg.ui.notify = "popup".into();
-        assert!(cfg.validate().is_err());
+    fn injection_mode_loads_as_an_enum() {
+        assert_keywords("injection", "mode", |c| c.injection.mode);
+        assert_rejects("injection", "mode", "nope");
+        assert_rejects("injection", "mode", "Paste");
+        let cfg = load_with("injection", "mode", None).unwrap();
+        assert_eq!(cfg.injection.mode, InjectMode::Paste, "default");
+        assert!(InjectMode::Paste.needs_ydotoold());
+        assert!(!InjectMode::Type.needs_ydotoold());
+    }
+
+    #[test]
+    fn injection_backend_loads_as_an_enum() {
+        assert_keywords("injection", "backend", |c| c.injection.backend);
+        assert_rejects("injection", "backend", "mir");
+        let cfg = load_with("injection", "backend", None).unwrap();
+        assert_eq!(cfg.injection.backend, Backend::Auto, "default");
+    }
+
+    #[test]
+    fn ui_notify_loads_as_an_enum() {
+        assert_keywords("ui", "notify", |c| c.ui.notify);
+        assert_rejects("ui", "notify", "popup");
+        let cfg = load_with("ui", "notify", None).unwrap();
+        assert_eq!(cfg.ui.notify, NotifyMode::Auto, "default");
+        // Configs without a [ui] table at all.
+        let text = DEFAULT_TOML.replace("[ui]", "[ui_gone]");
+        let cfg: Config = toml::from_str(&text).unwrap();
+        assert_eq!(cfg.ui.notify, NotifyMode::Auto);
+    }
+
+    #[test]
+    fn stt_backend_loads_as_an_enum() {
+        assert_keywords("stt", "backend", |c| c.stt.backend);
+        assert_rejects("stt", "backend", "rocm");
+        let cfg = load_with("stt", "backend", None).unwrap();
+        assert_eq!(cfg.stt.backend, ComputeBackend::Auto, "default");
+    }
+
+    #[test]
+    fn engine_is_a_config_choice_too() {
+        assert_keywords("stt", "engine", |c| c.stt.engine);
+        assert_rejects("stt", "engine", "vosk");
+    }
+
+    #[test]
+    fn notify_off_never_fires() {
+        assert!(!NotifyMode::Off.should_notify(DisplayServer::X11));
+        assert!(!NotifyMode::Off.should_notify(DisplayServer::Wayland));
+    }
+
+    #[test]
+    fn notify_on_always_fires() {
+        assert!(NotifyMode::On.should_notify(DisplayServer::X11));
+        assert!(NotifyMode::On.should_notify(DisplayServer::Wayland));
+    }
+
+    #[test]
+    fn notify_auto_fires_only_on_x11() {
+        // X11 has no layer-shell pill, so the notification is the only UI there.
+        assert!(NotifyMode::Auto.should_notify(DisplayServer::X11));
+        // Wayland gets the Quickshell pill, so auto stays quiet to avoid double-serving.
+        assert!(!NotifyMode::Auto.should_notify(DisplayServer::Wayland));
     }
 
     #[test]

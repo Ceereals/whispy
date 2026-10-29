@@ -36,7 +36,7 @@ use whispy_common::{State, StateSnapshot};
 
 use crate::app::App;
 use crate::config::Config;
-use crate::display::{Backend, DisplayServer};
+use crate::display::DisplayServer;
 use crate::engine::VocabStrategy;
 use crate::filter::Hallucinations;
 use crate::state::{StatePublisher, Status, now};
@@ -127,12 +127,12 @@ fn run(cfg: Config) -> std::io::Result<()> {
     // Decide which display server we're driving (Wayland vs X11) before touching
     // any injection tool. `auto` reads the session env; an explicit override forces
     // it. If nothing is detectable, default to Wayland (the historical behavior).
-    let server = display::resolve_from_env(Backend::parse(&cfg.injection.backend)).unwrap_or_else(
-        || {
-            warn!("could not detect display server (no WAYLAND_DISPLAY/DISPLAY); defaulting to Wayland");
-            DisplayServer::Wayland
-        },
-    );
+    let server = display::resolve_from_env(cfg.injection.backend).unwrap_or_else(|| {
+        warn!(
+            "could not detect display server (no WAYLAND_DISPLAY/DISPLAY); defaulting to Wayland"
+        );
+        DisplayServer::Wayland
+    });
     info!(display_server = ?server, "resolved display server");
 
     // Child tools (`wtype`/`xdotool`, `wl-*`/`xclip`) need WAYLAND_DISPLAY or DISPLAY;
@@ -242,7 +242,7 @@ fn run(cfg: Config) -> std::io::Result<()> {
 /// conservative — the warning names the preferred tool and doctor explains the
 /// fallback; injection itself uses whichever is present.
 fn warn_missing_tools(cfg: &Config, server: DisplayServer) {
-    for (tool, _note) in setup::required_tools(server, &cfg.injection.mode) {
+    for (tool, _note) in setup::required_tools(server, cfg.injection.mode) {
         if tool == "xclip" && setup::have("xsel") {
             continue; // xsel is an accepted fallback for the X11 clipboard.
         }
