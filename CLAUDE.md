@@ -87,6 +87,7 @@ Cargo workspace (`resolver = "3"`, `edition = "2024"`, MSRV `rust-version = 1.88
 | `filter.rs` | Hallucination filter: confidence thresholds → punctuation-only rejection → exact + fuzzy (`strsim`) blacklist match. |
 | `pipeline.rs` | Post-transcription text pipeline: corrections → snippets → AI workflow selection + LLM transform. Never fails (falls back to raw text). |
 | `llm.rs` | Minimal OpenAI-compatible chat client (local ollama by default) for AI workflows. |
+| `host.rs` | Host tools: the requirements dictation needs per display server + injection mode (with accepted alternatives, e.g. `xclip` \| `xsel`), the Vulkan build prerequisites, and `resolve_backend`, checked through one `Probe` (`System`: in-process `PATH` lookup, `ldconfig -p` via `proc`, include dirs). `setup doctor`/`whisper`/`stt`, the daemon's missing-tool warning, and the X11 clipboard choice all read its verdict. |
 | `proc.rs` | Deadline-bounded subprocess helpers (`output`/`status`/`with_stdin`) used for every runtime tool call (clipboard, typing, `ydotool`, window-class probes) so a wedged tool can't hang a thread. |
 | `inject.rs` | Text injection: `paste` mode (`wl-copy` + `ydotool` Ctrl+V, clipboard save/restore) or `type` mode (`wtype`). |
 | `state.rs` | `StatePublisher` writes `state.json` atomically (tmp + rename); `Status` keeps in-memory + on-disk snapshot in sync and flashes transient states. |

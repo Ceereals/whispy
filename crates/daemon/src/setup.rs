@@ -18,9 +18,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
 
-use crate::config::{self, ComputeBackend, Config, InjectMode};
+use crate::config::{self, Config};
 use crate::display::{self, DisplayServer};
 use crate::engine::{Engine, ModelSource};
+use crate::host::{self, BuildBackend, Probe as _, System};
 
 #[derive(clap::Args, Debug)]
 #[expect(
@@ -131,7 +132,7 @@ fn full(cfg: &Config, args: &SetupArgs) -> Result<(), String> {
             "\n==> Quickshell pill: skipped on X11 (layer-shell only); \
              desktop notifications are used instead (ui.notify)"
         );
-    } else if args.quickshell || have("quickshell") {
+    } else if args.quickshell || System.command("quickshell") {
         // Install the pill on request, or automatically when Quickshell is present —
         // no point shipping the module to a machine that can't render it.
         install_quickshell(!args.no_pill)?;
@@ -156,13 +157,13 @@ fn doctor(cfg: &Config) {
         DisplayServer::Wayland
     });
     println!("  display server: {}", server_label(server));
-    if server == DisplayServer::Wayland && have("hyprctl") {
+    if server == DisplayServer::Wayland && System.command("hyprctl") {
         println!("  hyprland config: {}", HyprConfig::detect().label());
     }
 
     println!("  runtime:");
-    for (cmd, note) in required_tools(server, cfg.injection.mode) {
-        report(cmd, note, have(cmd));
+    for check in host::dictation(&System, server, cfg.injection.mode) {
+        report(check.name, check.note, check.ok);
     }
 
     // The graphical pill is layer-shell only (Hyprland/KDE/Sway). On X11 we fall
@@ -184,27 +185,23 @@ fn doctor(cfg: &Config) {
         ("make", "build driver"),
         ("cc", "C/C++ compiler"),
     ] {
-        report(cmd, note, have(cmd));
+        report(cmd, note, System.command(cmd));
     }
     println!("  backend (for `setup whisper`; one of these, per stt.backend):");
+    let vulkan = host::vulkan_build(&System);
     report(
         "libvulkan",
         "Vulkan GPU backend (backend = vulkan/auto)",
-        has_vulkan(),
+        vulkan.loader,
     );
-    let missing = missing_vulkan_build_deps(have, header_installed);
     // cmake is already listed under "build" above.
-    for dep in VULKAN_BUILD_DEPS.iter().filter(|d| d.package != "cmake") {
-        report(
-            dep.package,
-            &format!("{} (Vulkan build)", dep.what),
-            !missing.iter().any(|m| m.package == dep.package),
-        );
+    for dep in vulkan.deps.iter().filter(|d| d.name != "cmake") {
+        report(dep.name, &format!("{} (Vulkan build)", dep.note), dep.ok);
     }
     report(
         "libopenblas",
         "faster CPU inference (optional, backend = cpu)",
-        has_lib("libopenblas"),
+        System.library("libopenblas"),
     );
 }
 
@@ -221,47 +218,10 @@ fn server_label(server: DisplayServer) -> &'static str {
     }
 }
 
-/// The runtime tools dictation needs for `server` and injection `mode`, as
-/// `(command, note)` pairs. Pure (no PATH probing) so `doctor` and
-/// `main::warn_missing_tools` can share one source of truth and stay in sync.
-///
-/// - Always: `pw-record` (capture), `ydotool` (paste keystroke, both servers),
-///   `notify-send` (error/status notifications).
-/// - Wayland: `wl-copy`/`wl-paste` for clipboard, plus `wtype` only in `type` mode.
-/// - X11: a clipboard tool (`xclip` *or* `xsel`) and `xdotool` (typing + window class).
-///
-/// On X11 the clipboard requirement is "either xclip or xsel"; we list `xclip`
-/// (the preferred one) so a single missing-tool warning points at the default.
-pub fn required_tools(
-    server: DisplayServer,
-    mode: InjectMode,
-) -> Vec<(&'static str, &'static str)> {
-    let type_mode = mode == InjectMode::Type;
-    let mut tools: Vec<(&'static str, &'static str)> = vec![
-        ("pw-record", "PipeWire audio capture"),
-        ("ydotool", "paste keystroke injection (both servers)"),
-        ("notify-send", "error/status notifications (libnotify)"),
-    ];
-    match server {
-        DisplayServer::Wayland => {
-            tools.push(("wl-copy", "clipboard write (wl-clipboard)"));
-            tools.push(("wl-paste", "clipboard read (wl-clipboard)"));
-            if type_mode {
-                tools.push(("wtype", "direct typing (injection.mode = type)"));
-            }
-        }
-        DisplayServer::X11 => {
-            tools.push(("xclip", "clipboard (xclip preferred, or install xsel)"));
-            tools.push(("xdotool", "typing + active-window class"));
-        }
-    }
-    tools
-}
-
 // --- whisper.cpp ------------------------------------------------------------
 
 fn build_whisper(cfg: &Config) -> Result<(), String> {
-    let backend = resolve_backend(cfg.stt.backend, has_vulkan);
+    let backend = host::resolve_backend(&System, cfg.stt.backend);
     println!("\n==> whisper.cpp ({backend})");
     let bin = cfg.stt.whisper_server_bin();
     if bin.exists() {
@@ -269,32 +229,10 @@ fn build_whisper(cfg: &Config) -> Result<(), String> {
         return Ok(());
     }
 
-    // Fail fast with a clear message: without the Vulkan loader the cmake configure
-    // below dies in a wall of output that doesn't name the real problem. (Only the
-    // Vulkan backend needs it — the CPU backend builds with no GPU libraries.)
-    if backend == BuildBackend::Vulkan && !has_vulkan() {
-        return Err(
-            "the Vulkan loader (libvulkan) is missing — the Vulkan whisper.cpp build needs it.\n  \
-             Install it (Arch: `vulkan-icd-loader` + your GPU's ICD, e.g. `vulkan-radeon`), then re-run.\n  \
-             Or set `stt.backend = \"cpu\"` in config.toml to build a CPU-only whisper-server instead."
-            .to_string(),
-        );
-    }
-    // The Vulkan build also needs a shader compiler and two header sets; without
-    // them cmake fails deep in ggml's configure. Name the packages up front.
+    // Fail fast naming the missing Vulkan prerequisites (the CPU backend builds
+    // with no GPU libraries).
     if backend == BuildBackend::Vulkan {
-        let missing = missing_vulkan_build_deps(have, header_installed);
-        if !missing.is_empty() {
-            let packages: Vec<&str> = missing.iter().map(|d| d.package).collect();
-            let what: Vec<&str> = missing.iter().map(|d| d.what).collect();
-            return Err(format!(
-                "the Vulkan whisper.cpp build is missing: {}.\n  \
-                 Install them (Arch: `sudo pacman -S --needed {}`), then re-run.\n  \
-                 Or set `stt.backend = \"cpu\"` in config.toml to build a CPU-only whisper-server instead.",
-                what.join(", "),
-                packages.join(" ")
-            ));
-        }
+        host::vulkan_build(&System).ensure("whisper.cpp")?;
     }
 
     // Default layout: <root>/build/bin/whisper-server. Derive <root> and <build>.
@@ -335,7 +273,7 @@ fn build_whisper(cfg: &Config) -> Result<(), String> {
         BuildBackend::Vulkan => configure.push("-DGGML_VULKAN=ON".to_string()),
         // CPU backend: OpenBLAS gives ~3-4x faster inference when it's installed.
         BuildBackend::Cpu => {
-            if has_lib("libopenblas") {
+            if System.library("libopenblas") {
                 println!("  OpenBLAS found — enabling the BLAS backend (faster CPU inference)");
                 configure.push("-DGGML_BLAS=ON".to_string());
                 configure.push("-DGGML_BLAS_VENDOR=OpenBLAS".to_string());
@@ -383,7 +321,7 @@ const STT_CMAKE_ARGS: &str = "-DTRANSCRIBE_USE_SYSTEM_BLAS=OFF";
 /// whispy-daemon; source installs build it with cargo, with the Vulkan backend
 /// when `stt.backend` resolves to it (else CPU).
 fn install_stt(cfg: &Config) -> Result<(), String> {
-    let backend = resolve_backend(cfg.stt.backend, has_vulkan);
+    let backend = host::resolve_backend(&System, cfg.stt.backend);
     println!("\n==> whispy-stt, Parakeet engine ({backend})");
     let bin = cfg.stt.parakeet_bin_path();
     if bin.is_file() {
@@ -396,7 +334,7 @@ fn install_stt(cfg: &Config) -> Result<(), String> {
         ("c++", "a C++ compiler"),
     ]
     .into_iter()
-    .filter(|(cmd, _)| !have(cmd))
+    .filter(|(cmd, _)| !System.command(cmd))
     .map(|(_, what)| what)
     .collect();
     if !missing.is_empty() {
@@ -409,21 +347,7 @@ fn install_stt(cfg: &Config) -> Result<(), String> {
     }
     let vulkan = backend == BuildBackend::Vulkan;
     if vulkan {
-        let missing = missing_vulkan_build_deps(have, header_installed);
-        if !missing.is_empty() {
-            let packages: Vec<&str> = missing.iter().map(|d| d.package).collect();
-            return Err(format!(
-                "the Vulkan build of whispy-stt needs: {}.\n  \
-                 Install them (Arch: `sudo pacman -S --needed {}`), then re-run.\n  \
-                 Or set `stt.backend = \"cpu\"` in config.toml for a CPU-only build.",
-                missing
-                    .iter()
-                    .map(|d| d.what)
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                packages.join(" ")
-            ));
-        }
+        host::vulkan_build(&System).ensure("whispy-stt")?;
     }
     println!("  building with cargo (the first build compiles transcribe.cpp; a few minutes)");
     exec(
@@ -544,7 +468,7 @@ fn print_progress(done: u64, total: Option<u64>) {
 
 fn setup_ydotool() -> Result<(), String> {
     println!("\n==> ydotool: uinput access (uses sudo)");
-    if !have("ydotool") {
+    if !System.command("ydotool") {
         println!("  note: ydotool is not installed yet — install it, then re-run this step.");
     }
     let user = std::env::var("USER").map_err(|e| format!("USER: {e}"))?;
@@ -571,7 +495,7 @@ fn setup_ydotool() -> Result<(), String> {
 /// `ydotool key` calls talk to; without it running, paste silently no-ops.
 fn install_ydotoold() -> Result<(), String> {
     println!("\n==> ydotoold user service");
-    if !have("ydotool") {
+    if !System.command("ydotool") {
         println!("  note: ydotool is not installed yet — install it, then re-run `setup`.");
         return Ok(());
     }
@@ -800,7 +724,7 @@ fn install_omarchy_widget() -> Result<(), String> {
         println!("  updated in place; its spot on the bar (if any) is unchanged");
         return Ok(());
     }
-    if !have("omarchy-shell") || !have("omarchy-bar") {
+    if !System.command("omarchy-shell") || !System.command("omarchy-bar") {
         println!("  add it to the bar from your Omarchy session: omarchy bar put {id}");
         return Ok(());
     }
@@ -826,7 +750,7 @@ fn install_omarchy_widget() -> Result<(), String> {
         println!("  could not add it now — from your Omarchy session run: omarchy bar put {id}");
     }
     hide_omarchy_dictation_indicator();
-    if have("voxtype") {
+    if System.command("voxtype") {
         println!(
             "  Voxtype is still installed and keeps its own model loaded; stop it with\n    \
              systemctl --user disable --now voxtype   (or remove it: omarchy-voxtype-remove)"
@@ -1057,129 +981,6 @@ fn exec(cmd: &mut Command) -> Result<(), String> {
     }
 }
 
-/// Is `cmd` on PATH?
-pub(crate) fn have(cmd: &str) -> bool {
-    Command::new("sh")
-        .arg("-c")
-        .arg(format!("command -v {cmd}"))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-}
-
-/// The compute backend an STT server build actually uses: `stt.backend` with
-/// `auto` resolved.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BuildBackend {
-    /// Build with the Vulkan GPU backend.
-    Vulkan,
-    /// CPU-only build (OpenBLAS-accelerated for whisper.cpp when present).
-    Cpu,
-}
-
-impl std::fmt::Display for BuildBackend {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Vulkan => "vulkan",
-            Self::Cpu => "cpu",
-        })
-    }
-}
-
-/// Resolve the configured `stt.backend` to a concrete backend for the build:
-/// `auto` picks Vulkan when `has_vulkan` finds its loader, else CPU; the explicit
-/// values pass through without probing.
-fn resolve_backend(configured: ComputeBackend, has_vulkan: impl FnOnce() -> bool) -> BuildBackend {
-    match configured {
-        ComputeBackend::Vulkan => BuildBackend::Vulkan,
-        ComputeBackend::Auto if has_vulkan() => BuildBackend::Vulkan,
-        ComputeBackend::Auto | ComputeBackend::Cpu => BuildBackend::Cpu,
-    }
-}
-
-/// Is the Vulkan loader present (so the Vulkan whisper.cpp build can run)?
-fn has_vulkan() -> bool {
-    has_lib("libvulkan")
-}
-
-/// A build-time dependency of whisper.cpp's Vulkan backend, named by its Arch
-/// package (the AUR package depends on all of them).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BuildDep {
-    package: &'static str,
-    what: &'static str,
-    probe: Probe,
-}
-
-/// How to tell whether a [`BuildDep`] is installed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Probe {
-    /// A command on PATH.
-    Command(&'static str),
-    /// A header under a system include dir.
-    Header(&'static str),
-}
-
-/// What `ggml`'s Vulkan `CMake` requires: `find_package(Vulkan COMPONENTS glslc)`
-/// and `find_package(SPIRV-Headers CONFIG)`, plus cmake itself.
-const VULKAN_BUILD_DEPS: [BuildDep; 4] = [
-    BuildDep {
-        package: "cmake",
-        what: "cmake",
-        probe: Probe::Command("cmake"),
-    },
-    BuildDep {
-        package: "shaderc",
-        what: "the glslc shader compiler",
-        probe: Probe::Command("glslc"),
-    },
-    BuildDep {
-        package: "vulkan-headers",
-        what: "Vulkan headers",
-        probe: Probe::Header("vulkan/vulkan.h"),
-    },
-    BuildDep {
-        package: "spirv-headers",
-        what: "SPIR-V headers",
-        probe: Probe::Header("spirv/unified1/spirv.hpp"),
-    },
-];
-
-/// The Vulkan build deps that are missing, given probes for commands and headers.
-/// Pure (probes injected) so the decision is unit-testable.
-fn missing_vulkan_build_deps(
-    has_command: impl Fn(&str) -> bool,
-    has_header: impl Fn(&str) -> bool,
-) -> Vec<BuildDep> {
-    VULKAN_BUILD_DEPS
-        .into_iter()
-        .filter(|dep| match dep.probe {
-            Probe::Command(cmd) => !has_command(cmd),
-            Probe::Header(header) => !has_header(header),
-        })
-        .collect()
-}
-
-/// Is `header` installed under a system include dir?
-fn header_installed(header: &str) -> bool {
-    ["/usr/include", "/usr/local/include"]
-        .iter()
-        .any(|dir| Path::new(dir).join(header).is_file())
-}
-
-/// Is a shared library matching `needle` registered with the dynamic linker?
-/// Used to decide which whisper.cpp backend (Vulkan, `OpenBLAS`) the host can build.
-fn has_lib(needle: &str) -> bool {
-    Command::new("sh")
-        .arg("-c")
-        .arg(format!("ldconfig -p | grep -q {needle}"))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-}
-
 fn print_next_steps(server: DisplayServer) {
     println!("\n==> done. Add push-to-talk keybinds:");
     print_server_keybinds(server);
@@ -1325,7 +1126,6 @@ fn print_x11_keybinds() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ConfigChoice;
 
     #[test]
     fn whispy_unit_depends_on_ydotoold() {
@@ -1344,55 +1144,6 @@ mod tests {
         assert!(unit.contains("ExecStart=ydotoold"), "{unit}");
         assert!(unit.contains("[Install]"), "{unit}");
         assert!(unit.contains("WantedBy=graphical-session.target"), "{unit}");
-    }
-
-    /// The command names from `required_tools`, for set-membership assertions.
-    fn tool_names(server: DisplayServer, mode: InjectMode) -> Vec<&'static str> {
-        required_tools(server, mode)
-            .into_iter()
-            .map(|(cmd, _)| cmd)
-            .collect()
-    }
-
-    #[test]
-    fn required_tools_always_includes_capture_paste_notify() {
-        for server in [DisplayServer::Wayland, DisplayServer::X11] {
-            for &mode in InjectMode::ALL {
-                let names = tool_names(server, mode);
-                for always in ["pw-record", "ydotool", "notify-send"] {
-                    assert!(
-                        names.contains(&always),
-                        "{always} missing for {server:?}/{mode}"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn required_tools_wayland_lists_wl_clipboard_and_wtype_only_in_type_mode() {
-        let paste = tool_names(DisplayServer::Wayland, InjectMode::Paste);
-        assert!(paste.contains(&"wl-copy"));
-        assert!(paste.contains(&"wl-paste"));
-        assert!(!paste.contains(&"wtype"), "paste mode needs no wtype");
-
-        let typed = tool_names(DisplayServer::Wayland, InjectMode::Type);
-        assert!(typed.contains(&"wtype"), "type mode needs wtype");
-        // No X11 tools leak into the Wayland list.
-        assert!(!typed.contains(&"xdotool"));
-        assert!(!typed.contains(&"xclip"));
-    }
-
-    #[test]
-    fn required_tools_x11_lists_clipboard_and_xdotool_in_both_modes() {
-        for &mode in InjectMode::ALL {
-            let names = tool_names(DisplayServer::X11, mode);
-            assert!(names.contains(&"xclip"), "x11 clipboard for {mode}");
-            assert!(names.contains(&"xdotool"), "x11 typing/class for {mode}");
-            // No Wayland tools leak into the X11 list.
-            assert!(!names.contains(&"wl-copy"));
-            assert!(!names.contains(&"wtype"));
-        }
     }
 
     #[test]
@@ -1422,28 +1173,6 @@ mod tests {
             omarchy_widget_dir().file_name().and_then(|n| n.to_str()),
             Some(OMARCHY_WIDGET_ID)
         );
-    }
-
-    #[test]
-    fn missing_vulkan_build_deps_names_only_what_is_absent() {
-        let all = missing_vulkan_build_deps(|_| false, |_| false);
-        let packages: Vec<&str> = all.iter().map(|d| d.package).collect();
-        assert_eq!(
-            packages,
-            ["cmake", "shaderc", "vulkan-headers", "spirv-headers"]
-        );
-
-        assert_eq!(missing_vulkan_build_deps(|_| true, |_| true), []);
-
-        // The case from the AUR report: tools present, both header sets absent.
-        let headers_only = missing_vulkan_build_deps(|_| true, |_| false);
-        let packages: Vec<&str> = headers_only.iter().map(|d| d.package).collect();
-        assert_eq!(packages, ["vulkan-headers", "spirv-headers"]);
-
-        // glslc is probed as a command, not a library.
-        let no_glslc = missing_vulkan_build_deps(|cmd| cmd != "glslc", |_| true);
-        assert_eq!(no_glslc.len(), 1);
-        assert_eq!(no_glslc[0].package, "shaderc");
     }
 
     #[test]
@@ -1597,32 +1326,5 @@ mod tests {
             let binds = wayland_keybinds(hypr).to_ascii_uppercase();
             assert!(!binds.contains("SPACE"), "{binds}");
         }
-    }
-
-    #[test]
-    fn resolve_backend_passes_through_explicit_values_without_probing() {
-        let no_probe = || panic!("explicit backends must not probe for Vulkan");
-        assert_eq!(
-            resolve_backend(ComputeBackend::Vulkan, no_probe),
-            BuildBackend::Vulkan
-        );
-        assert_eq!(
-            resolve_backend(ComputeBackend::Cpu, no_probe),
-            BuildBackend::Cpu
-        );
-    }
-
-    #[test]
-    fn resolve_backend_auto_follows_the_vulkan_probe() {
-        assert_eq!(
-            resolve_backend(ComputeBackend::Auto, || true),
-            BuildBackend::Vulkan
-        );
-        assert_eq!(
-            resolve_backend(ComputeBackend::Auto, || false),
-            BuildBackend::Cpu
-        );
-        assert_eq!(BuildBackend::Vulkan.to_string(), "vulkan");
-        assert_eq!(BuildBackend::Cpu.to_string(), "cpu");
     }
 }

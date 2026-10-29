@@ -15,6 +15,13 @@ transcribe.cpp). The daemon runs it as a supervised STT server behind the same
 and arguments, its model and where `setup` downloads it, the `setup` step that
 installs it, and its vocabulary strategy. See `crates/daemon/src/engine.rs`.
 
+**Host tools** — what whispy needs installed on the machine: the runtime tools
+dictation drives for the display server and injection mode (some with accepted
+alternatives, like `xclip` or `xsel` for the X11 clipboard) and the prerequisites
+of a Vulkan STT build. One verdict on them is shared by `setup doctor`, the
+daemon's startup warning, the `setup` builds, and injection. See
+`crates/daemon/src/host.rs`.
+
 **Inference contract** — the `POST /inference` wire format between whispy-daemon
 and its STT server: a `multipart/form-data` request (`response_format`,
 `language`, `temperature`, optional `prompt`, and a 16 kHz mono WAV `file`) and
