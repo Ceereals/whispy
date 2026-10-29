@@ -67,9 +67,9 @@ Cargo workspace (`resolver = "3"`, `edition = "2024"`, MSRV `rust-version = 1.88
 
 | Crate | Path | Role |
 |-------|------|------|
-| `whispy-common` | `crates/common/` | Shared IPC protocol + state types (`Cmd`, `Resp`, `State`, `StateSnapshot`). Serde only, no logic. |
+| `whispy-common` | `crates/common/` | Shared IPC protocol + state types (`Cmd`, `Resp`, `State`, `StateSnapshot`), plus `inference`: the pure `/inference` wire contract shared by whispy-daemon and whispy-stt (field names, `SAMPLE_RATE`, `Response`, `build_multipart`). Serde and that one encoder, no other logic. |
 | `whispy-daemon` | `crates/daemon/` | The resident service and the `setup` bootstrap. All the real logic. |
-| `whispy-stt` | `crates/stt/` | Parakeet STT server on transcribe.cpp, whisper-server compatible (`multipart.rs`, `reply.rs` are the pure, tested wire format). Builds C++ via cmake; `.cargo/config.toml` sets `TRANSCRIBE_CMAKE_ARGS` (no system BLAS). |
+| `whispy-stt` | `crates/stt/` | Parakeet STT server on transcribe.cpp, whisper-server compatible (`multipart.rs` parses and `reply.rs` builds the shared `whispy_common::inference` contract; pure and tested). Builds C++ via cmake; `.cargo/config.toml` sets `TRANSCRIBE_CMAKE_ARGS` (no system BLAS). |
 | `whispy-client` | `crates/client/` | Thin sync client invoked from Hyprland binds. |
 
 ### Daemon modules (`crates/daemon/src/`)
@@ -83,7 +83,7 @@ Cargo workspace (`resolver = "3"`, `edition = "2024"`, MSRV `rust-version = 1.88
 | `engine.rs` | `Engine` (`stt.engine`: `Whisper` \| `Parakeet`, serde-parsed): owns what differs per engine — server name/binary/extra args, model file + download source (URL, SHA-256), `setup` step, and the vocabulary strategy (`Prompt` for whisper, `Correct` via `vocab.rs` for Parakeet). Callers ask the engine instead of branching on it. |
 | `stt_server.rs` | Spawns and supervises the STT server child (`whispy-stt` or `whisper-server`, per `Engine`); waits for its port; a monitor thread in `main` polls `is_alive` and `restart`s it if it dies; kills it on shutdown. |
 | `vocab.rs` | Fuzzy custom-vocabulary correction (Levenshtein + Soundex over 1–3 word windows, ported from Handy) for Parakeet, which can't take whisper's prompt bias. |
-| `stt.rs` | HTTP client to the STT server's `/inference` (multipart WAV, `verbose_json`); parses transcript + confidence signals. |
+| `stt.rs` | HTTP client to the STT server's `/inference` (wire format from `whispy_common::inference`); aggregates transcript + confidence signals. |
 | `filter.rs` | Hallucination filter: confidence thresholds → punctuation-only rejection → exact + fuzzy (`strsim`) blacklist match. |
 | `pipeline.rs` | Post-transcription text pipeline: corrections → snippets → AI workflow selection + LLM transform. Never fails (falls back to raw text). |
 | `llm.rs` | Minimal OpenAI-compatible chat client (local ollama by default) for AI workflows. |

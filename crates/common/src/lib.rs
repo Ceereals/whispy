@@ -3,6 +3,11 @@
 //! The client talks to the daemon over a Unix socket using a line-based JSON
 //! protocol: one [`Cmd`] per line in, one [`Resp`] per line out. The daemon also
 //! publishes a [`StateSnapshot`] to `state.json` for the Quickshell pill UI.
+//!
+//! [`inference`] holds the `/inference` wire contract shared by `whispy-daemon`
+//! and its STT server, `whispy-stt`.
+
+pub mod inference;
 
 use serde::{Deserialize, Serialize};
 

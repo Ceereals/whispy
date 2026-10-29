@@ -339,9 +339,10 @@ impl Config {
 
         // The clip goes to whisper as a WAV that is always labeled 16 kHz mono
         // (whisper's native input); any other capture format would be misread.
-        if self.audio.rate != 16000 || self.audio.channels != 1 {
+        let rate = whispy_common::inference::SAMPLE_RATE;
+        if self.audio.rate != rate || self.audio.channels != 1 {
             return Err(format!(
-                "audio.rate must be 16000 and audio.channels 1 (whisper's input format), got {} Hz / {} ch",
+                "audio.rate must be {rate} and audio.channels 1 (whisper's input format), got {} Hz / {} ch",
                 self.audio.rate, self.audio.channels
             ));
         }

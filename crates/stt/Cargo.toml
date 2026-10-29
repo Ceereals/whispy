@@ -18,6 +18,7 @@ default = []
 vulkan = ["transcribe-cpp/vulkan"]
 
 [dependencies]
+whispy-common = { workspace = true }
 transcribe-cpp = { workspace = true }
 tiny_http = { workspace = true }
 hound = { workspace = true }
