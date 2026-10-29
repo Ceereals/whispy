@@ -28,7 +28,6 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use tracing::{error, info, warn};
@@ -42,10 +41,7 @@ use crate::engine::VocabStrategy;
 use crate::filter::Hallucinations;
 use crate::state::{StatePublisher, Status, now};
 use crate::stt::SttClient;
-use crate::stt_server::SttServer;
-
-/// How long to wait for the STT server to load the model and start listening.
-const STT_READY_TIMEOUT: Duration = Duration::from_secs(60);
+use crate::stt_server::SttSupervisor;
 
 #[derive(Parser, Debug)]
 #[expect(
@@ -160,57 +156,9 @@ fn run(cfg: Config) -> std::io::Result<()> {
     }));
     let status = Status::new(shared, publisher, cfg.ipc.state_max_hz);
 
-    // Bring up the STT server (model resident) before announcing idle.
-    let server_log = config::state_dir().join("whisper-server.log");
-    if let Some(parent) = server_log.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    // Rotate only here, at daemon start: in-process restarts append, so the output
-    // of a crash survives the monitor respawning the server.
-    if let Err(e) = config::rotate_if_larger(&server_log, config::WHISPER_LOG_MAX_BYTES) {
-        warn!(error = %e, "could not rotate whisper-server.log");
-    }
-    let stt_server = Arc::new(Mutex::new(SttServer::spawn(&cfg.stt, &server_log)?));
-    if !stt_server
-        .lock()
-        .expect("stt server lock")
-        .wait_ready(STT_READY_TIMEOUT, &shutdown)
-    {
-        stt_server.lock().expect("stt server lock").shutdown();
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            format!(
-                "{} did not become ready (see {} for details)",
-                cfg.stt.engine.server_name(),
-                server_log.display()
-            ),
-        ));
-    }
-    info!("{} ready", cfg.stt.engine.server_name());
-
-    // Monitor: if the STT server dies after startup, respawn it. Polls often enough
-    // that SIGTERM-driven shutdown stays responsive.
-    let monitor = {
-        let server_name = cfg.stt.engine.server_name();
-        let stt_server = Arc::clone(&stt_server);
-        let shutdown = Arc::clone(&shutdown);
-        std::thread::spawn(move || {
-            while !shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_secs(2));
-                if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-                    break;
-                }
-                let mut w = stt_server.lock().expect("stt server lock");
-                if !w.is_alive() {
-                    match w.restart(STT_READY_TIMEOUT, &shutdown) {
-                        Ok(true) => info!("{server_name} restarted"),
-                        Ok(false) => warn!("{server_name} restart did not become ready"),
-                        Err(e) => error!(error = %e, "failed to restart {server_name}"),
-                    }
-                }
-            }
-        })
-    };
+    // Bring up the STT server (model resident) before announcing idle; the
+    // supervisor keeps it alive until `stop`.
+    let stt_server = SttSupervisor::start(&cfg.stt, &config::state_dir(), Arc::clone(&shutdown))?;
 
     // The engine decides how the custom vocabulary reaches it: a decoding prompt
     // (whisper) here, or a correction of the transcript in `pipeline` (Parakeet).
@@ -229,8 +177,7 @@ fn run(cfg: Config) -> std::io::Result<()> {
     let result = server::serve(&socket_path, app, Arc::clone(&shutdown));
 
     info!("shutting down");
-    monitor.join().ok();
-    stt_server.lock().expect("stt server lock").shutdown();
+    stt_server.stop();
     result
 }
 

@@ -22,6 +22,12 @@ the `verbose_json` subset it gets back (`text`, `detected_language`,
 `segments[].text/avg_logprob/no_speech_prob`). whispy-stt and whisper.cpp's
 whisper-server both speak it. See `crates/common/src/inference.rs`.
 
+**STT supervisor** — the daemon module that keeps the engine's STT server
+running: it starts the server and waits until it listens, restarts it if it dies
+(backing off while restarts keep failing), and kills it at shutdown. The server's
+output goes to `<server name>.log` in the state dir. See
+`crates/daemon/src/stt_server.rs`.
+
 **Transcript log** — `transcripts.jsonl` in the state dir: one record per
 transcribed clip, accepted or dropped (with the drop reason and confidence
 signals), kept for filter calibration and shown by `stats` and the settings
