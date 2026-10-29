@@ -9,6 +9,12 @@ transcribe.cpp). The daemon runs it as a supervised STT server behind the same
 and arguments, its model and where `setup` downloads it, the `setup` step that
 installs it, and its vocabulary strategy. See `crates/daemon/src/engine.rs`.
 
+**STT supervisor** — the daemon module that keeps the engine's STT server
+running: it starts the server and waits until it listens, restarts it if it dies
+(backing off while restarts keep failing), and kills it at shutdown. The server's
+output goes to `<server name>.log` in the state dir. See
+`crates/daemon/src/stt_server.rs`.
+
 **Vocabulary correction** — the fuzzy, after-the-fact rewrite of a transcript
 against `dictionary.vocabulary`, for engines that can't take the vocabulary as a
 decoding prompt (Parakeet). Misheard spellings of a custom word ("Hyperland",

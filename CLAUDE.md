@@ -81,7 +81,7 @@ Cargo workspace (`resolver = "3"`, `edition = "2024"`, MSRV `rust-version = 1.88
 | `server.rs` | Unix-socket server: line-based JSON (`Cmd` in, `Resp` out), polls a shutdown flag for clean SIGTERM exit. |
 | `audio.rs` | PipeWire capture via `pw-record` (raw s16le mono), RMS metering, gain, clip limits, trailing-silence auto-stop, peak normalization. |
 | `engine.rs` | `Engine` (`stt.engine`: `Whisper` \| `Parakeet`, serde-parsed): owns what differs per engine — server name/binary/extra args, model file + download source (URL, SHA-256), `setup` step, and the vocabulary strategy (`Prompt` for whisper, `Correct` via `vocab.rs` for Parakeet). Callers ask the engine instead of branching on it. |
-| `stt_server.rs` | Spawns and supervises the STT server child (`whispy-stt` or `whisper-server`, per `Engine`); waits for its port; a monitor thread in `main` polls `is_alive` and `restart`s it if it dies; kills it on shutdown. |
+| `stt_server.rs` | `SttSupervisor` — the STT supervisor: `start` rotates `<server name>.log`, spawns the STT server child (`whispy-stt` or `whisper-server`, per `Engine`) and blocks until its port listens; its monitor thread owns the child and restarts it if it dies (exponential backoff, 2 s → 60 s); `stop` kills it at shutdown. |
 | `vocab.rs` | Fuzzy custom-vocabulary correction (Levenshtein + Soundex over 1–3 word windows, ported from Handy) for Parakeet, which can't take whisper's prompt bias. |
 | `stt.rs` | HTTP client to the STT server's `/inference` (multipart WAV, `verbose_json`); parses transcript + confidence signals. |
 | `filter.rs` | Hallucination filter: confidence thresholds → punctuation-only rejection → exact + fuzzy (`strsim`) blacklist match. |
@@ -117,7 +117,8 @@ on it, and the QML pill reads the `state.json` shape.
 - Runtime override: `$XDG_CONFIG_HOME/whispy/config.toml` (or `--config FILE`).
 - Tilde paths (`~/...`) in config are expanded by the daemon.
 - Logs: JSON lines to `$XDG_STATE_HOME/whispy/daemon.log`; level via `RUST_LOG`
-  (default `info`). whisper-server output goes to `whisper-server.log` in the state dir.
+  (default `info`). The STT server's output goes to `<server name>.log` in the state dir
+  (`whisper-server.log` or `whispy-stt.log`).
   Both logs and `transcripts.jsonl` are size-capped via `config::rotate_if_larger`
   (one `.1` generation); `stats` reads both generations.
 
@@ -201,8 +202,8 @@ binaries (not whisper-server/model), publish a GitHub release, and push to the A
   without the `cblas_*` symbols (Arch), failing the final link of `whispy-stt`. The repo's
   `.cargo/config.toml` passes `-DTRANSCRIBE_USE_SYSTEM_BLAS=OFF`; `setup stt` passes the
   same flag itself because `cargo install --git` ignores repo config.
-- whisper-server / whispy-stt is launched/supervised by the daemon and respawned in-process by a monitor
-  thread (`main.rs`) if it dies. Don't shell out to start it elsewhere. STT requests are
+- whisper-server / whispy-stt is launched/supervised by the daemon and respawned in-process by the
+  `SttSupervisor` monitor thread (`stt_server.rs`) if it dies. Don't shell out to start it elsewhere. STT requests are
   bounded by `stt.timeout_secs` so a hung server surfaces an error instead of stalling.
 - Hyprland configs are now Lua (`hyprland.lua`, `hl.bind`) as well as hyprlang
   (`hyprland.conf`); Omarchy 4 adds an `o.bind` helper and loads user binds from
